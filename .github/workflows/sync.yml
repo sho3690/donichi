@@ -11,7 +11,7 @@ name: 同期と週末の割り振り
 # - checkout に資格情報を残さず、push のときだけトークンを使う。外部の Action はコミットで固定。
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"   # 混み合う毎時0分を避ける
   workflow_dispatch:
 
 concurrency:
