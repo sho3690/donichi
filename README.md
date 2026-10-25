@@ -18,7 +18,7 @@ Instagram・Threads・X・TikTok などで見つけた「行きたい所」の�
    ▼
 [GitHub Actions  scripts/sync.mjs]
    ・Instagram / Threads / TikTok / X / YouTube / 一般サイトから投稿の本文を取る
-   ・本文から日付・期間・場所・営業時間・定休日・料金・種類を読み取る（ルール。Claude の鍵があれば Claude）
+   ・本文から日付・期間・場所・営業時間・定休日・料金・種類を読み取る（ルール。Claude の鍵があれば別の手順で Claude）
    ・期間の過ぎたものを片づける
    ・木曜7時を過ぎたら、天気予報（Open-Meteo）・期限・行きたい人の数・エリアのまとまりを見て週末に割り振る
    ・暗号化して data/state.json に保存 → GitHub Pages で配信
@@ -28,7 +28,12 @@ Instagram・Threads・X・TikTok などで見つけた「行きたい所」の�
   `data/state.json` と中継のメッセージは暗号文なので、合言葉が無いと中身は読めません。
   GitHub の無料プランでは非公開リポジトリから Pages を出せないため、この形にしています。
 - **招待リンク**（`#k=…`）は鍵そのものを URL の `#` 以降に入れたものです。`#` 以降はサーバーに送られません。
-  信頼できる人にだけ送ってください。
+  信頼できる人にだけ送ってください。招待するときは、受け取ったリンクをそのまま転送するか、設定で合言葉を入れて作り直します。
+- **端末の中の鍵**: 開いたあとは「取り出せない形（non-extractable）」の鍵だけを IndexedDB に置き、親鍵そのものは保存しません。
+  sho3690.github.io は他のアプリと同じ置き場なので、万一そちらに不正なスクリプトが入っても鍵を持ち出されないようにするためです
+  （その場で使われることまでは防げません。気になる場合は独自ドメインへの移設が根本策です）。
+- **Actions の守り**: Claude Code（外部パッケージ）は版を固定し、データの鍵が無い手順で入れて動かします。
+  GitHub への書き込み権限は最後の push の手順だけで使い、外部の Action はコミットの番号で固定しています。
 - **Actions のログは公開**されるので、件数以外（題名・URL・名前）は出力しないようにしています。
 - TikTok / X / YouTube は、追加したその場でブラウザから本文を取ります（公式の oEmbed。X は予備に fxtwitter）。
 
@@ -70,4 +75,10 @@ python3 -m http.server 8790      # http://127.0.0.1:8790/ で画面を確認
 ```
 
 ファイル: `index.html` / `style.css` / `app.js`（画面） · `logic.js`（日付・祝日・読み取り・割り振り・データ更新の純粋関数）
-· `crypto.js`（暗号） · `relay.js`（中継） · `sources.js`（本文の取得と解析） · `scripts/`（Actions 用）
+· `crypto.js`（暗号） · `relay.js`（中継） · `sources.js`（本文の取得と解析）
+· `scripts/sync.mjs`（同期・割り振り） · `scripts/ai.mjs` / `ai-merge.mjs`（Claude の読み取りと反映） · `scripts/setup.mjs`（合言葉の作成・変更）
+
+木曜の割り振りの試運転（時刻を差し替えて、一時コピーで実行）:
+```
+DONICHI_KEY="$(cat .secrets/master.b64)" DONICHI_NOW=$(node -e "console.log(Date.parse('2026-10-29T07:05:00+09:00'))") node scripts/sync.mjs
+```
