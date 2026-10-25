@@ -287,7 +287,7 @@ function pickArea(sources) {
 
 const SENTENCE_END = /(でした|です|ます|ました|だった|よね|よ|ね|な|た|!|！|\?|？|♡|w)$/;
 
-export function extractInfo({ text = '', title = '', author = '', note = '' } = {}, today) {
+export function extractInfo({ text = '', title = '', author = '', note = '', platform = '' } = {}, today) {
   const raw = [note, text].filter(Boolean).join('\n');
   const body = normalizeText(raw);
   const lines = body.split(/\n+/).map(l => l.trim()).filter(Boolean);
@@ -348,7 +348,7 @@ export function extractInfo({ text = '', title = '', author = '', note = '' } = 
   if (!name && venueLab && !isAddressish(venueLab)) name = cut(venueLab);
   if (!name) name = firstLine();
   if (!name && title) name = cleanLine(normalizeText(title));
-  if (!name) name = author ? `${author}の投稿` : 'メモ';
+  if (!name) name = author ? `${author}の投稿` : platform && platform !== 'memo' ? `${PLATFORM_LABEL[platform] || ''}の投稿` : 'メモ';
   name = clip(name, 32);
 
   // 日付（イベントらしい文脈のときだけ信用する。訪問日などは捨てる）
@@ -466,7 +466,7 @@ export function newItem({ id, url, note, source, by, at }, today) {
 }
 export function refreshAuto(item, today) {
   const s = item.source || {};
-  item.auto = extractInfo({ text: s.text || '', title: s.title || '', author: s.author || '', note: item.note }, today);
+  item.auto = extractInfo({ text: s.text || '', title: s.title || '', author: s.author || '', note: item.note, platform: item.platform }, today);
   return item;
 }
 
