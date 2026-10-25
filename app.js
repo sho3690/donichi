@@ -164,14 +164,6 @@ function start({ joined = false } = {}) {
 let wired = false;
 function wire() {
   if (wired) return; wired = true;
-  // 下へスクロールしている間は浮かぶボタンをしまう（カードに重ならないように）
-  let lastY = window.scrollY;
-  window.addEventListener('scroll', () => {
-    const y = window.scrollY;
-    const atEnd = y + window.innerHeight >= document.documentElement.scrollHeight - 8;
-    $('.fab').classList.toggle('away', y > 80 && y > lastY + 2 && !atEnd);
-    if (Math.abs(y - lastY) > 2) lastY = y;
-  }, { passive: true });
   document.addEventListener('click', onAction);
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
@@ -348,8 +340,6 @@ function render() {
   }
   const parts = app.view === 'stock' ? viewStock(st) : app.view === 'done' ? viewDone(st) : viewWeekend(st);
   view.replaceChildren(...parts);
-  // 画面の中に「リンクを追加」があるときは、浮かぶボタンを出さない（重なり防止）
-  $('.fab').hidden = !!view.querySelector('[data-action="add"]');
   if (focusKey) view.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   if (app.sheet && (app.sheet.kind === 'detail' || app.sheet.kind === 'pick')) renderSheet();   // 入力中のシートは書き換えない
 }

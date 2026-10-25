@@ -89,11 +89,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .btn .ic { width: 1.125rem; height: 1.125rem; }
 .btn-primary { background: var(--primary); color: var(--on-primary); }
-.btn-primary:hover { background: var(--primary-hover); }
+@media (hover: hover) { .btn-primary:hover { background: var(--primary-hover); } }
 .btn-secondary { background: var(--surface); color: var(--link); border-color: var(--border-strong); }
-.btn-secondary:hover { background: var(--surface-muted); }
+@media (hover: hover) { .btn-secondary:hover { background: var(--surface-muted); } }
 .btn-tertiary { background: transparent; color: var(--link); padding-inline: .75rem; }
-.btn-tertiary:hover { background: var(--surface-muted); }
+@media (hover: hover) { .btn-tertiary:hover { background: var(--surface-muted); } }
 .btn-danger { background: var(--surface); color: var(--error); border-color: var(--border-strong); }
 .btn-danger.confirm { background: #b42318; color: #fff; border-color: #b42318; }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
@@ -105,7 +105,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-md);
   border: 0; background: transparent; color: var(--text-2); cursor: pointer;
 }
-.icon-btn:hover { background: var(--surface-muted); color: var(--text); }
+@media (hover: hover) { .icon-btn:hover { background: var(--surface-muted); color: var(--text); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---- 上の帯（固定しない） ---- */
@@ -120,7 +120,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---- 下のタブ（スマホ）／上のタブ（PC） ---- */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 6px 8px calc(6px + var(--safe-b));
   background: var(--surface); border-top: 1px solid var(--border);
 }
@@ -140,16 +140,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: 9px; background: var(--primary); color: var(--on-primary); font-size: .6875rem; line-height: 18px; text-align: center; font-weight: 700;
 }
 
+/* 追加ボタン: スマホでは下のタブの4つ目の枠に置く（内容に重ならない） */
 .fab {
-  position: fixed; right: 16px; bottom: calc(var(--nav-h) + 16px + var(--safe-b)); z-index: 21;
-  display: inline-flex; align-items: center; gap: .5rem; min-height: 52px; padding: 0 1.125rem 0 1rem;
-  border: 0; border-radius: var(--r-xl); background: var(--primary); color: var(--on-primary);
-  font-size: .9375rem; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-md);
+  position: fixed; right: 8px; bottom: calc(6px + var(--safe-b)); z-index: 21;
+  width: calc((100vw - 16px) / 4); min-height: 52px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 0;
+  border: 0; border-radius: var(--r-md); background: transparent; color: var(--text-2);
+  font-size: .75rem; font-weight: 700; cursor: pointer;
 }
-.fab:hover { background: var(--primary-hover); }
-.fab { transition: transform .2s ease, opacity .2s ease; }
-.fab.away { transform: translateY(calc(100% + 24px)); opacity: 0; pointer-events: none; }
-.fab .ic { width: 1.375rem; height: 1.375rem; stroke-width: 2.2; }
+.fab .ic { width: 2rem; height: 1.75rem; padding: .25rem .4rem; border-radius: .5rem; background: var(--primary); color: var(--on-primary); stroke-width: 2.4; }
+@media (hover: hover) { .fab:hover .ic { background: var(--primary-hover); } }
 
 @media (min-width: 760px) {
   .tabs { position: static; display: flex; gap: .25rem; padding: 0; background: transparent; border: 0; }
@@ -166,7 +166,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 @media (min-width: 760px) and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tabs a[aria-current="page"] { color: var(--blue-200); } }
 
 /* ---- 本文 ---- */
-.view { display: block; max-width: 760px; margin: 0 auto; padding: 32px 16px calc(var(--nav-h) + 104px + var(--safe-b)); outline: none; }
+.view { display: block; max-width: 760px; margin: 0 auto; padding: 32px 16px calc(var(--nav-h) + 48px + var(--safe-b)); outline: none; }
 @media (min-width: 760px) { .view { padding: 40px 16px 80px; } }
 .page-head { margin-bottom: 1.5rem; }
 .page-head h1 { font-size: 1.75rem; font-weight: 800; }
@@ -210,7 +210,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
 .plan-card { overflow: hidden; }
 .plan-main { display: flex; gap: .875rem; width: 100%; padding: 1rem; border: 0; background: transparent; text-align: left; cursor: pointer; border-radius: var(--r-lg) var(--r-lg) 0 0; }
-.plan-main:hover { background: var(--surface-muted); }
+@media (hover: hover) { .plan-main:hover { background: var(--surface-muted); } }
 .plan-main .txt { min-width: 0; flex: 1; }
 .plan-title { font-size: 1.0625rem; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
 .meta { margin-top: .25rem; font-size: .875rem; color: var(--text-2); display: flex; flex-wrap: wrap; gap: .125rem .5rem; }
@@ -250,7 +250,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2);
   font-size: .875rem; font-weight: 600; cursor: pointer;
 }
-.chip:hover { background: var(--surface-muted); }
+@media (hover: hover) { .chip:hover { background: var(--surface-muted); } }
 .chip[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .chip .n { font-weight: 500; opacity: .85; }
 
@@ -259,7 +259,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: flex; gap: .875rem; width: 100%; padding: .875rem; text-align: left; cursor: pointer;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
 }
-.item:hover { border-color: var(--border-strong); background: var(--surface); box-shadow: var(--shadow-sm); }
+@media (hover: hover) { .item:hover { border-color: var(--border-strong); background: var(--surface); box-shadow: var(--shadow-sm); } }
 .thumb {
   flex: none; width: 64px; height: 64px; border-radius: var(--r-md); overflow: hidden; background: var(--surface-muted);
   display: grid; place-items: center; color: var(--text-3); font-size: .6875rem; font-weight: 800; letter-spacing: .04em;
@@ -380,7 +380,7 @@ details.raw summary { cursor: pointer; min-height: 44px; display: flex; align-it
 
 .pick { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; }
 .pick button { width: 100%; display: block; text-align: left; padding: .875rem 1rem; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); cursor: pointer; }
-.pick button:hover { border-color: var(--border-strong); background: var(--surface-muted); }
+@media (hover: hover) { .pick button:hover { border-color: var(--border-strong); background: var(--surface-muted); } }
 
 .settings-group { padding: 1.25rem 0; border-bottom: 1px solid var(--border); }
 .settings-group:first-child { padding-top: .25rem; }
@@ -396,7 +396,7 @@ details.raw summary { cursor: pointer; min-height: 44px; display: flex; align-it
 .dot.off { background: var(--n-400); }
 
 /* ---- トースト ---- */
-.toast-viewport { position: fixed; left: 0; right: 0; bottom: calc(var(--nav-h) + 84px + var(--safe-b)); z-index: 40; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+.toast-viewport { position: fixed; left: 0; right: 0; bottom: calc(var(--nav-h) + 16px + var(--safe-b)); z-index: 40; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
 @media (min-width: 760px) { .toast-viewport { bottom: 24px; } }
 .toast {
   pointer-events: auto; display: flex; align-items: center; gap: 1rem; max-width: 520px; width: max-content;
