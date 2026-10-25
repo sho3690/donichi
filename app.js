@@ -254,8 +254,7 @@ function recompute() {
   if (!app.snap) return;
   const st = structuredClone(app.snap);
   const evs = [...app.relay.values()].sort((a, b) => (a.time - b.time) || ((a.at || 0) - (b.at || 0)));
-  for (const ev of evs) L.applyEvent(st, ev);
-  for (const ev of app.outbox) L.applyEvent(st, ev);
+  for (const ev of [...evs, ...app.outbox]) { try { L.applyEvent(st, ev); } catch { /* おかしなイベントは飛ばす */ } }
   app.st = st;
   render();
 }
@@ -385,7 +384,7 @@ function viewWeekend(st) {
   const out = [head];
   for (const d of wk.days) {
     // 過ぎた日で何も入っていない日は出さない
-    if (d < today && !plan.slots.some(s => s.date === d && s.itemId && st.items[s.itemId])) continue;
+    if (d < today && !plan.slots.some(s => s.date === d && L.has(st.items, s.itemId))) continue;
     out.push(daySection(st, plan, d, today));
   }
   const who = plan.by === 'auto' ? `${L.mdw(L.jstToday(plan.createdAt || Date.now()))} に自動で割り振りました` : `${plan.by}さんが ${hm(plan.createdAt)} に割り振りました`;
@@ -423,7 +422,7 @@ function weatherBadge(w) {
 
 function daySection(st, plan, d, today) {
   const pace = st.settings.pace || 2;
-  const slots = plan.slots.map((s, i) => ({ ...s, i })).filter(s => s.date === d && s.itemId && st.items[s.itemId])
+  const slots = plan.slots.map((s, i) => ({ ...s, i })).filter(s => s.date === d && L.has(st.items, s.itemId))
     .sort((a, b) => L.SLOT_DEF[a.slot].order - L.SLOT_DEF[b.slot].order);
   const hol = L.holidayName(d);
   const w = app.wx[d] || plan.weather[d];
@@ -644,7 +643,7 @@ function submitAdd(urlEl, noteEl, err) {
 // ---- 詳細 ----
 function sheetDetail(s) {
   const st = app.st;
-  const item = st?.items[s.id];
+  const item = L.has(st?.items, s.id) ? st.items[s.id] : null;
   if (!item) return null;
   const info = L.effectiveInfo(item);
   const today = L.jstToday();
@@ -689,7 +688,7 @@ const clipNote = s => (s.length > 200 ? `${s.slice(0, 200)}…` : s);
 
 // ---- 情報を直す ----
 function sheetEdit(s) {
-  const item = app.st?.items[s.id];
+  const item = L.has(app.st?.items, s.id) ? app.st.items[s.id] : null;
   if (!item) return null;
   const info = L.effectiveInfo(item);
   const base = L.effectiveInfo({ ...item, edits: null });
@@ -843,7 +842,7 @@ function onAction(e) {
     case 'unwant': send('item.want', { itemId: id, off: true }); break;
     case 'refetch': send('item.refetch', { itemId: id }); toast('もう一度取りに行きます（15分ほど）'); break;
     case 'done': {
-      if (!st?.items[id]) break;
+      if (!L.has(st?.items, id)) break;
       send('item.status', { itemId: id, status: 'done' });
       toast('「行った」にしました', { label: '取り消す', fn: () => send('item.status', { itemId: id, status: 'inbox' }) });
       if (app.sheet?.kind === 'detail') closeSheet();
@@ -853,7 +852,7 @@ function onAction(e) {
     case 'restore': send('item.status', { itemId: id, status: 'inbox' }); toast('ストックに戻しました'); break;
     case 'delete': {
       if (!twoStep(el, '本当に削除する')) break;
-      const item = st.items[id];
+      const item = L.has(st.items, id) ? st.items[id] : null;
       send('item.delete', { itemId: id });
       closeSheet();
       toast('削除しました', item ? { label: '元に戻す', fn: () => send('item.add', { item: { id: uid(), url: item.url, note: item.note, source: item.source } }) } : null);
@@ -863,7 +862,7 @@ function onAction(e) {
       if (a === 'replan' && !twoStep(el, '今の予定を作り直す')) break;
       const { wk, plan } = currentPlan();
       const today = L.jstToday();
-      const keep = plan ? plan.slots.filter(s => s.date < today || st.items[s.itemId]?.status === 'done') : [];
+      const keep = plan ? plan.slots.filter(s => L.has(st.items, s.itemId) && (s.date < today || st.items[s.itemId].status === 'done')) : [];
       const next = L.planWeekend(st, wk, { weather: weatherFor(wk, plan), today, by: app.name, keep });
       setPlan(next, next.slots.length ? `${next.slots.length}件を割り振りました` : '入れられるものがありませんでした', plan || null);
       if (!plan) setTimeout(() => window.scrollTo({ top: 0 }), 0);
@@ -892,7 +891,7 @@ function onAction(e) {
     case 'choose': {
       const { plan } = currentPlan();
       const s = app.sheet;
-      if (!plan || !s || !st.items[id]) break;
+      if (!plan || !s || !L.has(st.items, id)) break;
       const next = structuredClone(plan);
       const info = L.effectiveInfo(st.items[id]);
       if (s.index != null && next.slots[s.index]) {
@@ -940,7 +939,7 @@ let toastTimer = 0;
 function toast(msg, action = null) {
   const t = $('#toast');
   clearTimeout(toastTimer);
-  t.replaceChildren(h('span', {}, msg), action && h('button', { type: 'button', onclick: () => { t.hidden = true; action.fn(); } }, action.label));
+  t.replaceChildren(h('span', {}, msg), ...(action ? [h('button', { type: 'button', onclick: () => { t.hidden = true; action.fn(); } }, action.label)] : []));
   t.hidden = false;
   const hide = () => { toastTimer = setTimeout(() => { t.hidden = true; }, action ? 6000 : 3500); };
   t.onmouseenter = t.onfocusin = () => clearTimeout(toastTimer);

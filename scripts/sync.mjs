@@ -29,7 +29,7 @@ const stateUrl = new URL('data/state.json', ROOT);
 const file = JSON.parse(await readFile(stateUrl, 'utf8').catch(() => '{}'));
 const state = file.sealed ? await open(keys, file.sealed) : emptyState();
 const before = JSON.stringify(state);
-const now = Date.now();
+const now = Number(process.env.DONICHI_NOW) || Date.now();   // 試運転用に時刻を差し替えられる
 const today = jstToday(now);
 
 // 1) 中継のイベント
@@ -42,7 +42,8 @@ for (const m of msgs) {
   let ev;
   try { ev = await open(keys, m.message); } catch { broken++; continue; }
   ev.time = m.time;
-  if (applyEvent(state, ev, { today: jstToday(Number(ev.at) || m.time * 1000) })) applied++;
+  try { if (applyEvent(state, ev, { today: jstToday(Number(ev.at) || m.time * 1000) })) applied++; }
+  catch { broken++; }   // おかしなイベント1件で同期全体を止めない
 }
 say(`中継: ${msgs.length}件を確認、${applied}件を反映${broken ? `、読めないもの${broken}件` : ''}`);
 

@@ -15,6 +15,11 @@ export const DOW_JA = ['日', '月', '火', '水', '木', '金', '土'];
 export const md = s => `${+s.slice(5, 7)}/${+s.slice(8, 10)}`;
 export const mdw = s => `${md(s)}(${DOW_JA[dow(s)]})`;
 const validYmd = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && ymd(parseYmd(s)) === s;
+// 他の人から届く値で辞書を引くときは、必ず自前のキーだけを見る（__proto__ などを踏まない）
+export const has = (o, k) => typeof k === 'string' && o != null && Object.hasOwn(o, k);
+const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+export const safeId = k => typeof k === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(k) && !RESERVED.has(k);
+const safeName = v => { const n = typeof v === 'string' ? v.trim().slice(0, 24) : ''; return n && !RESERVED.has(n) ? n : ''; };
 
 // 朝7時区切りの「今日」（日本時間）
 export function jstToday(now = Date.now()) {
@@ -416,7 +421,7 @@ export function effectiveInfo(item) {
   }
   if (item.edits && Array.isArray(item.edits.dates)) out.dates = item.edits.dates;
   out.title = out.title || 'メモ';
-  out.category = CATEGORIES[out.category] ? out.category : 'other';
+  out.category = has(CATEGORIES, out.category) ? out.category : 'other';
   return out;
 }
 
@@ -443,9 +448,9 @@ export function sanitizeInfo(e) {
   const out = {};
   for (const k of ['title', 'place', 'area', 'address', 'hours', 'price', 'summary', 'station']) if (k in e) out[k] = e[k] === null ? null : str(e[k], k === 'summary' ? 140 : 80);
   if ('dates' in e) out.dates = e.dates === null ? null : sanitizeDates(e.dates) || [];
-  if ('category' in e && CATEGORIES[e.category]) out.category = e.category;
+  if ('category' in e && has(CATEGORIES, e.category)) out.category = e.category;
   if ('indoor' in e) out.indoor = e.indoor === true || e.indoor === false ? e.indoor : null;
-  if ('duration' in e && DURATION_LABEL[e.duration]) out.duration = e.duration;
+  if ('duration' in e && has(DURATION_LABEL, e.duration)) out.duration = e.duration;
   if ('timeOfDay' in e && ['morning', 'day', 'night', 'any'].includes(e.timeOfDay)) out.timeOfDay = e.timeOfDay;
   if ('closedDays' in e) out.closedDays = Array.isArray(e.closedDays) ? [...new Set(e.closedDays.filter(n => Number.isInteger(n) && n >= 0 && n <= 6))] : null;
   if ('weekdayOnly' in e) out.weekdayOnly = !!e.weekdayOnly;
@@ -480,13 +485,13 @@ export function applyEvent(state, ev, { today } = {}) {
   if (!ev || typeof ev !== 'object' || typeof ev.id !== 'string') return false;
   if (state.log.applied.includes(ev.id)) return false;
   today = today || jstToday(ev.at || Date.now());
-  const by = str(ev.by, 24);
+  const by = safeName(ev.by);
   const at = Number(ev.at) || Date.now();
-  const it = typeof ev.itemId === 'string' ? state.items[ev.itemId] : null;
+  const it = safeId(ev.itemId) && has(state.items, ev.itemId) ? state.items[ev.itemId] : null;
   switch (ev.t) {
     case 'item.add': {
       const x = ev.item || {};
-      if (typeof x.id !== 'string' || state.items[x.id]) break;
+      if (!safeId(x.id) || has(state.items, x.id)) break;
       const p = x.url ? parseUrl(x.url) : null;
       if (x.url && !p) break;
       const dup = p ? findByCanonical(state, p.canonical) : null;
@@ -545,16 +550,16 @@ export function applyEvent(state, ev, { today } = {}) {
     }
     case 'settings.set': {
       if ([1, 2, 3].includes(ev.pace)) state.settings.pace = ev.pace;
-      if (typeof ev.city === 'string' && CITIES[ev.city]) state.settings.city = ev.city;
+      if (has(CITIES, ev.city)) state.settings.city = ev.city;
       break;
     }
     case 'member.join': {
-      if (by && !state.members[by]) state.members[by] = { joinedAt: at };
+      if (by && !has(state.members, by)) state.members[by] = { joinedAt: at };
       break;
     }
     default: break;
   }
-  if (by && !state.members[by]) state.members[by] = { joinedAt: at };
+  if (by && !has(state.members, by)) state.members[by] = { joinedAt: at };
   state.log.applied.push(ev.id);
   if (state.log.applied.length > MAX_APPLIED) state.log.applied.splice(0, state.log.applied.length - MAX_APPLIED);
   if (Number(ev.time) > state.log.lastTime) state.log.lastTime = Number(ev.time);
@@ -567,8 +572,8 @@ export function sanitizePlan(p) {
   const days = Array.isArray(p.days) ? p.days.filter(validYmd).slice(0, MAX_WEEKEND_DAYS) : [];
   if (!days.length) return null;
   const slots = (Array.isArray(p.slots) ? p.slots : []).slice(0, 40)
-    .filter(s => s && days.includes(s.date) && SLOT_DEF[s.slot])
-    .map(s => ({ date: s.date, slot: s.slot, itemId: typeof s.itemId === 'string' ? s.itemId : null, reason: str(s.reason, 60) }));
+    .filter(s => s && days.includes(s.date) && has(SLOT_DEF, s.slot))
+    .map(s => ({ date: s.date, slot: s.slot, itemId: safeId(s.itemId) ? s.itemId : null, reason: str(s.reason, 60) }));
   const weather = {};
   for (const d of days) {
     const w = p.weather?.[d];
@@ -576,8 +581,8 @@ export function sanitizePlan(p) {
   }
   return {
     key: p.key, days, slots, weather,
-    skipped: Array.isArray(p.skipped) ? p.skipped.filter(x => typeof x === 'string').slice(-60) : [],
-    by: str(p.by, 24) || 'auto', createdAt: Number(p.createdAt) || 0, closed: !!p.closed,
+    skipped: Array.isArray(p.skipped) ? p.skipped.filter(safeId).slice(-60) : [],
+    by: safeName(p.by) || 'auto', createdAt: Number(p.createdAt) || 0, closed: !!p.closed,
   };
 }
 
@@ -598,7 +603,7 @@ export const CITIES = {
   naha: { label: '那覇', lat: 26.2124, lon: 127.6809 },
 };
 export function weatherUrl(city) {
-  const c = CITIES[city] || CITIES.tokyo;
+  const c = has(CITIES, city) ? CITIES[city] : CITIES.tokyo;
   return `https://api.open-meteo.com/v1/forecast?latitude=${c.lat}&longitude=${c.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=14`;
 }
 export function parseWeather(json) {
@@ -718,9 +723,8 @@ export function planWeekend(state, wk, { weather = {}, today, by = 'auto', now =
   const byDay = Object.fromEntries(wk.days.map(d => [d, []]));
   const used = new Set();
   for (const k of keep) {
-    if (!byDay[k.date] || !k.itemId || used.has(k.itemId)) continue;
+    if (!has(byDay, k.date) || !has(state.items, k.itemId) || used.has(k.itemId)) continue;
     const it = state.items[k.itemId];
-    if (!it) continue;
     used.add(k.itemId);
     byDay[k.date].push({ slot: k.slot, itemId: k.itemId, reason: k.reason || '', info: effectiveInfo(it), kept: true });
   }
@@ -755,7 +759,7 @@ export function rankForSlot(state, plan, date, slot, { today } = {}) {
   today = today || jstToday();
   const wk = { key: plan.key, days: plan.days };
   const inPlan = new Set(plan.slots.map(s => s.itemId).filter(Boolean));
-  const dayItems = plan.slots.filter(s => s.date === date && s.itemId && s.slot !== slot).map(s => ({ info: state.items[s.itemId] ? effectiveInfo(state.items[s.itemId]) : {} }));
+  const dayItems = plan.slots.filter(s => s.date === date && has(state.items, s.itemId) && s.slot !== slot).map(s => ({ info: effectiveInfo(state.items[s.itemId]) }));
   return candidates(state, wk, today)
     .filter(c => !inPlan.has(c.item.id) && c.days.includes(date))
     .map(c => ({ ...c, ...scoreOn(c, date, dayItems, plan.weather, plan.key), skipped: plan.skipped.includes(c.item.id) }))
@@ -784,7 +788,7 @@ export function maintain(state, today) {
   for (const p of Object.values(state.plans)) {
     if (p.closed || !p.days.length || p.days.at(-1) >= today) continue;
     for (const s of p.slots) {
-      const it = s.itemId && state.items[s.itemId];
+      const it = has(state.items, s.itemId) ? state.items[s.itemId] : null;
       if (it && it.status === 'inbox') it.postponed = (it.postponed || 0) + 1;
     }
     p.closed = true; changed = true;
