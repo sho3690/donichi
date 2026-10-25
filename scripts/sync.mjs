@@ -1,18 +1,19 @@
 // GitHub Actions から15分ごとに実行する。
 // 1) 中継に届いた追加・変更を取り込む 2) 投稿の本文を取って情報を読み取る 3) 片づけ
 // 4) 木曜の朝7時を過ぎたら今週末を自動で割り振る 5) 暗号化して data/state.json に保存
-// 6) Claude で読み取るものがあれば、本文だけを一時ファイルに書き出す（Claude はデータの鍵が無い別の手順で動く）
+// 6) Claude で読み取るものがあれば、本文だけを受け渡し用の鍵（AI_KEY）で封をして次のジョブへ渡す
+//    （Claude はデータの鍵も書き込み権限も無い別のジョブ・別のマシンで動く）
 // 公開リポジトリのログは誰でも読めるので、件数以外（題名・URL・名前・エラー文）は出力しない。
 
-import { appendFile, writeFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import { poll } from '../relay.js';
-import { open } from '../crypto.js';
+import { open, seal, keysFrom, b64u } from '../crypto.js';
 import {
   applyEvent, jstToday, weekendFor, autoPlanDay, planWeekend, maintain, refreshAuto,
   parseWeather, weatherUrl, sanitizePlan, sanitizeSource, candidates, clip,
 } from '../logic.js';
 import { fetchOnServer } from './sources-server.mjs';
-import { loadKeys, loadState, saveState, tmpPath } from './state-io.mjs';
+import { loadKeys, loadState, saveState } from './state-io.mjs';
 
 const log = [];
 const say = s => { log.push(s); console.log(s); };
@@ -84,17 +85,17 @@ async function main() {
   } else say('変更なし');
 
   // 6) Claude に読み取ってもらうもの（鍵が登録されているときだけ）
-  let needAi = 0;
-  if (process.env.HAS_AI === 'true') {
+  let needAi = 0, aiIn = '';
+  if (process.env.HAS_AI === 'true' && process.env.AI_KEY) {
     const need = Object.values(state.items)
       .filter(i => i.status === 'inbox' && !i.ai && (i.aiTries || 0) < 2 && (i.fetch?.state === 'ok' || i.fetch?.state === 'failed') && (i.source?.text || i.source?.title || i.note))
       .slice(0, 6)
       .map(i => ({ id: i.id, platform: i.platform, author: i.source?.author || '', text: clip([i.source?.title, i.source?.text].filter(Boolean).join('\n'), 1800), memo: clip(i.note || '', 600) }));
-    if (need.length) await writeFile(tmpPath('ai-in'), JSON.stringify({ today, posts: need }), { mode: 0o600 });
+    if (need.length) aiIn = await seal(await keysFrom(b64u.dec(process.env.AI_KEY.trim())), { today, posts: need });
     needAi = need.length;
     if (needAi) say(`Claude で読み取るもの: ${needAi}件`);
   }
-  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `need_ai=${needAi}\n`);
+  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `need_ai=${needAi}\nai_in=${aiIn}\n`);
 }
 
 try { await main(); }

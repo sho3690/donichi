@@ -76,7 +76,7 @@ async function boot() {
   const master = linkKey || (joinPass ? b64u.enc(await deriveMaster(joinPass, app.cfg.salt, app.cfg.iterations)) : null) || legacy;
   ls.del(K.master);
   if (master) {
-    if (!(await useKey(b64u.dec(master)))) return showLock({ error: linkKey ? 'この招待リンクは使えなくなっています。新しいリンクをもらってください。' : '合言葉が変わりました。新しい招待リンクを開くか、合言葉を入れ直してください。' });
+    if (!(await useKey(master))) return showLock({ error: linkKey ? 'この招待リンクは使えなくなっています。新しいリンクをもらってください。' : '合言葉が変わりました。新しい招待リンクを開くか、合言葉を入れ直してください。' });
   } else {
     const saved = await keyStore.get('keys');
     if (saved && saved.check === app.cfg.check && saved.aes) app.keys = saved;
@@ -88,9 +88,9 @@ async function boot() {
   start();
 }
 
-async function useKey(masterBytes) {
+async function useKey(master) {
   try {
-    const keys = await keysFrom(masterBytes);
+    const keys = await keysFrom(typeof master === 'string' ? b64u.dec(master) : master);   // 壊れたリンクでもここで止まらない
     if (keys.check !== app.cfg.check) return false;
     app.keys = keys;
     await keyStore.set('keys', { aes: keys.aes, topic: keys.topic, check: keys.check });   // 保存できない環境では、この画面を開いている間だけ使う
@@ -165,13 +165,14 @@ function showLock({ error = '', nameOnly = false } = {}) {
 // ================= 起動後 =================
 function start({ joined = false } = {}) {
   $('#lock').hidden = true; $('#shell').hidden = false;
-  app.outbox = ls.json(K.outbox, []);
+  app.outbox = [];
   app.sent = ls.json(K.sent, []);
   app.filter = ls.get(K.filter) || 'all';
   const wx = ls.json(K.wx, null);
   if (wx?.data) app.wx = wx.data;
 
   wire();
+  loadOutbox().then(() => { if (app.outbox.length) { recompute(); flushOutbox(); } });
   route();
   const cached = ls.json(K.cache, null);
   if (cached?.sealed) open(app.keys, cached.sealed).then(s => { if (!app.snap) { app.snap = s; recompute(); } }).catch(() => {});
@@ -292,7 +293,17 @@ function send(t, payload = {}) {
   flushOutbox();
   return ev;
 }
-const saveOutbox = () => ls.set(K.outbox, JSON.stringify(app.outbox));
+// 未送信の変更も、端末の中では封をして置く
+let outboxSaving = Promise.resolve();
+function saveOutbox() {
+  const snapshot = [...app.outbox];
+  outboxSaving = outboxSaving.then(async () => { try { ls.set(K.outbox, snapshot.length ? await seal(app.keys, snapshot) : ''); } catch { /* 保存できなくても送信は続ける */ } });
+}
+async function loadOutbox() {
+  const raw = ls.get(K.outbox);
+  if (!raw) return;
+  try { const list = raw.startsWith('dn1.') ? await open(app.keys, raw) : JSON.parse(raw); if (Array.isArray(list)) app.outbox = [...list, ...app.outbox]; } catch { /* 読めなければ捨てる */ }
+}
 
 function shrink(ev, step) {
   const e = structuredClone(ev);
@@ -782,7 +793,7 @@ function sheetPick(s) {
       h('span', { class: 'plan-title' }, c.info.title),
       h('span', { class: 'meta' }, [c.info.area, L.CATEGORIES[c.info.category].label, L.dateLabel(c.info, today)].filter(Boolean).map(m => h('span', {}, m))),
       h('span', { class: 'reason' }, icon('spark'), c.skipped ? '今週いちど見送ったもの' : c.reason)))))
-    : h('p', { class: 'help' }, 'この日に行けるものがストックにありません。');
+    : h('p', { class: 'help' }, replacing ? 'この時間帯に合うものがストックにありません。' : 'この日に行けるものがストックにありません。');
   return [sheetHead(`${L.mdw(s.date)}に入れる`, replacing ? '入れ替える候補' : 'ストックから選ぶ'), h('div', { class: 'sheet-body' }, body)];
 }
 
@@ -830,6 +841,8 @@ function inviteForm() {
   const err = h('p', { class: 'err', id: 's-pass-err', hidden: true });
   const pass = h('input', { class: 'input', id: 's-pass', type: 'password', autocomplete: 'current-password', autocapitalize: 'off', spellcheck: 'false', placeholder: '合言葉', 'aria-describedby': 's-pass-err' });
   const btn = h('button', { class: 'btn btn-secondary', type: 'submit' }, icon('link'), '招待リンクを作る');
+  const linkField = h('input', { class: 'input', id: 's-link', type: 'text', readonly: true, onfocus: e => e.target.select() });
+  const out = h('div', { class: 'field mt', hidden: true }, h('label', { for: 's-link' }, '招待リンク'), linkField, h('p', { class: 'help' }, 'このリンクを開いた人は合言葉なしで入れます。'));
   return h('form', { class: 'mt', novalidate: true, onsubmit: async e => {
     e.preventDefault();
     err.hidden = true; pass.setAttribute('aria-invalid', 'false');
@@ -841,11 +854,14 @@ function inviteForm() {
     if (keys.check !== app.cfg.check) { err.hidden = false; err.textContent = '合言葉が違います'; pass.setAttribute('aria-invalid', 'true'); pass.focus(); return; }
     pass.value = '';
     const link = `${location.origin}${location.pathname}#k=${b64u.enc(master)}`;
-    if (navigator.share) navigator.share({ title: '土日 DONICHI', text: '週末の予定をいっしょに決めるアプリに招待します', url: link }).catch(() => {});
-    else navigator.clipboard?.writeText(link).then(() => toast('招待リンクをコピーしました'), () => toast('コピーできませんでした'));
+    out.hidden = false; linkField.value = link;
+    const copy = () => navigator.clipboard?.writeText(link).then(() => toast('招待リンクをコピーしました'), () => { linkField.focus(); linkField.select(); toast('下のリンクを長押ししてコピーしてください'); });
+    if (navigator.share) navigator.share({ title: '土日 DONICHI', text: '週末の予定をいっしょに決めるアプリに招待します', url: link }).catch(e => { if (e?.name !== 'AbortError') copy(); });
+    else if (navigator.clipboard) copy();
+    else { linkField.focus(); linkField.select(); }
   } },
   h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'donichi', hidden: true, readonly: true }),
-  h('div', { class: 'with-btn' }, h('label', { class: 'visually-hidden', for: 's-pass' }, '合言葉'), pass, btn), err);
+  h('div', { class: 'with-btn' }, h('label', { class: 'visually-hidden', for: 's-pass' }, '合言葉'), pass, btn), err, out);
 }
 
 // ================= 操作 =================
@@ -947,7 +963,7 @@ function onAction(e) {
       if (s.index != null && next.slots[s.index]) {
         const old = next.slots[s.index];
         if (old.itemId && !next.skipped.includes(old.itemId)) next.skipped.push(old.itemId);
-        next.slots[s.index] = { ...old, itemId: id, reason: '選んで入れた予定' };
+        next.slots[s.index] = { ...old, itemId: id, reason: '選んで入れた予定', slot: L.slotAfterReplace(st, next, s.index, info) };
       } else {
         const taken = next.slots.filter(x => x.date === s.date && x.itemId);
         const slot = L.freeSlotFor(info, taken, 3) || ['pm', 'am', 'night'].find(x => !taken.some(t => t.slot === x)) || 'pm';

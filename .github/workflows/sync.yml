@@ -4,8 +4,11 @@ name: 同期と週末の割り振り
 # 木曜の朝7時（日本時間）を過ぎた最初の回で、今週末の予定を自動で割り振る。
 # GitHub の定時実行は遅れることがあるので、割り振りは「木曜7時以降で、まだ無ければ作る」で判定している。
 #
-# 守り: Claude Code（外部パッケージ）を入れる手順・動かす手順には、データの鍵（DONICHI_KEY）を渡さない。
-# GitHub への書き込み権限は最後の push の手順だけで使う（checkout に残さない）。外部の Action はコミットで固定。
+# 守り:
+# - Claude Code（外部パッケージ）は別のジョブ（別のマシン）で動かす。そこにはデータの鍵（DONICHI_KEY）も書き込み権限も無い。
+#   本文と結果の受け渡しは、受け渡し専用の鍵（AI_KEY）で封をしてジョブの出力で行う。
+# - 同期の結果は Claude より先に保存する（Claude が止まっても失われない）。
+# - checkout に資格情報を残さず、push のときだけトークンを使う。外部の Action はコミットで固定。
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -16,57 +19,86 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
+    permissions:
+      contents: write
     env:
-      HAS_AI: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      HAS_AI: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && secrets.AI_KEY != '' }}
+    outputs:
+      need_ai: ${{ steps.sync.outputs.need_ai }}
+      ai_in: ${{ steps.sync.outputs.ai_in }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-
       - name: 同期する
         id: sync
         env:
           DONICHI_KEY: ${{ secrets.DONICHI_KEY }}
+          AI_KEY: ${{ secrets.AI_KEY }}
         run: node scripts/sync.mjs
-
-      - name: Claude Code を入れる（鍵は渡さない・版を固定）
-        if: env.HAS_AI == 'true' && steps.sync.outputs.need_ai != '0'
-        run: npm install -g @anthropic-ai/claude-code@2.1.296
-
-      - name: Claude で読み取る（データの鍵は渡さない）
-        if: env.HAS_AI == 'true' && steps.sync.outputs.need_ai != '0'
-        continue-on-error: true
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: node scripts/ai.mjs
-
-      - name: 読み取り結果を合わせる
-        if: env.HAS_AI == 'true' && steps.sync.outputs.need_ai != '0'
-        env:
-          DONICHI_KEY: ${{ secrets.DONICHI_KEY }}
-        run: node scripts/ai-merge.mjs
-
       - name: 保存する
         env:
           PUSH_TOKEN: ${{ github.token }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/state.json
-          if git diff --staged --quiet; then
-            echo "変更はありません"
-          else
-            git commit -m "同期 $(TZ=Asia/Tokyo date '+%m/%d %H:%M')"
-            git pull --rebase origin main
-            git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
-          fi
+        run: bash scripts/push-state.sh "同期"
+
+  ai:
+    needs: sync
+    if: needs.sync.outputs.need_ai != '' && needs.sync.outputs.need_ai != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    outputs:
+      ai_out: ${{ steps.ai.outputs.ai_out }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Claude Code を入れる（版を固定）
+        run: npm install -g @anthropic-ai/claude-code@2.1.296
+      - name: Claude で読み取る
+        id: ai
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AI_KEY: ${{ secrets.AI_KEY }}
+          AI_IN: ${{ needs.sync.outputs.ai_in }}
+        run: node scripts/ai.mjs
+
+  merge:
+    needs: [sync, ai]
+    if: always() && needs.sync.result == 'success' && needs.sync.outputs.need_ai != '' && needs.sync.outputs.need_ai != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: 読み取り結果を合わせる
+        env:
+          DONICHI_KEY: ${{ secrets.DONICHI_KEY }}
+          AI_KEY: ${{ secrets.AI_KEY }}
+          AI_IN: ${{ needs.sync.outputs.ai_in }}
+          AI_OUT: ${{ needs.ai.outputs.ai_out }}
+        run: node scripts/ai-merge.mjs
+      - name: 保存する
+        env:
+          PUSH_TOKEN: ${{ github.token }}
+        run: bash scripts/push-state.sh "Claude の読み取り"

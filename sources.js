@@ -14,10 +14,21 @@ async function getJson(url, timeout = 8000) {
   } finally { clearTimeout(t); }
 }
 
+// 位置を進めながら読むだけの小さな道具。どんな入力でも長さに比例した時間で終わる（正規表現の暴走を避ける）
+function between(html, lower, start, open, close, max) {
+  const i = lower.indexOf(open, start);
+  if (i < 0) return null;
+  const j = lower.indexOf('>', i);
+  if (j < 0) return null;
+  const k = lower.indexOf(close, j + 1);
+  if (k < 0 || k - j > max) return null;
+  return { inner: html.slice(j + 1, k), head: html.slice(i, j + 1), end: k };
+}
+
 export function parseXOembed(j) {
-  const html = String(j?.html || '');
-  const p = html.match(/<p[^>]*>([\s\S]*?)<\/p>/);
-  const text = p ? htmlToText(p[1]).replace(/\s*pic\.(twitter|x)\.com\/\S+/g, '').trim() : '';
+  const html = String(j?.html || '').slice(0, 50000);
+  const p = between(html, html.toLowerCase(), 0, '<p', '</p>', 20000);
+  const text = p ? htmlToText(p.inner).replace(/\s*pic\.(twitter|x)\.com\/\S+/g, '').trim() : '';
   return text ? { author: j.author_name || '', text, title: '', thumb: '', via: 'x-oembed' } : null;
 }
 
@@ -56,9 +67,16 @@ export async function fetchInBrowser(item) {
 // ---- HTML の解析（サーバー側で使う。テストしやすいようここに置く） ----
 export function metaTags(html) {
   const out = {};
-  // 長さに上限のある素直な正規表現だけを使う（巨大なページで固まらないように）
-  for (const m of String(html).matchAll(/<meta\s[^>]{0,20000}>/gi)) {
-    const tag = m[0];
+  html = String(html);
+  const lower = html.toLowerCase();
+  for (let pos = 0; ;) {
+    const i = lower.indexOf('<meta', pos);
+    if (i < 0) break;
+    const j = lower.indexOf('>', i);
+    if (j < 0) break;
+    pos = j + 1;
+    if (j - i > 20000) continue;
+    const tag = html.slice(i, j + 1);
     const key = (tag.match(/(?:property|name)\s*=\s*["']([^"']{1,100})["']/i) || [])[1];
     const val = (tag.match(/content\s*=\s*"([^"]*)"/i) || tag.match(/content\s*=\s*'([^']*)'/i) || [])[1];
     if (key && val != null && !(key.toLowerCase() in out)) out[key.toLowerCase()] = decodeEntities(val);
@@ -79,13 +97,20 @@ export function parseInstagram(html) {
     if (m) { if (m.length === 3) { author = author || m[1]; text = m[2]; } else text = m[1]; }
   }
   if (!text) {   // 埋め込みページ（/embed/captioned/）の本文
-    const c = String(html).match(/class="Caption"[^>]*>([\s\S]*?)<\/div>/);
+    const h = String(html), lower = h.toLowerCase();
+    const at = lower.indexOf('class="caption"');
+    const c = at >= 0 ? between(h, lower, lower.lastIndexOf('<', at), '<', '</div>', 30000) : null;
     if (c) {
-      const raw = htmlToText(c[1].replace(/<a[^>]*class="CaptionUsername"[^>]*>[\s\S]*?<\/a>/, '').replace(/<div class="CaptionComments"[\s\S]*$/, ''));
-      text = raw.replace(/\s*(View all|コメント\d|すべてのコメント)[\s\S]*$/, '').trim();
+      let inner = c.inner;
+      const cut = inner.indexOf('<div class="CaptionComments"');
+      if (cut >= 0) inner = inner.slice(0, cut);
+      const ua = inner.indexOf('class="CaptionUsername"');
+      if (ua >= 0) {
+        const gt = inner.indexOf('>', ua), endA = inner.indexOf('</a>', ua);
+        if (gt >= 0 && endA > gt) { author = author || inner.slice(gt + 1, endA).trim(); inner = inner.slice(0, inner.lastIndexOf('<', ua)) + inner.slice(endA + 4); }
+      }
+      text = htmlToText(inner).replace(/\s*(View all|コメント\d|すべてのコメント)[\s\S]*$/, '').trim();
     }
-    const u = String(html).match(/class="CaptionUsername"[^>]*>([^<]+)</);
-    if (u) author = author || u[1].trim();
   }
   if (!text) return null;
   return { author, text: text.trim(), title: '', thumb: meta['og:image'] || '', via: 'instagram' };
@@ -102,7 +127,8 @@ export function parseThreads(html) {
 
 export function parseGeneric(html) {
   const meta = metaTags(html);
-  const title = meta['og:title'] || meta['twitter:title'] || (String(html).match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || '';
+  const tt = between(String(html), String(html).toLowerCase(), 0, '<title', '</title>', 2000);
+  const title = meta['og:title'] || meta['twitter:title'] || (tt ? tt.inner : '');
   const text = meta['og:description'] || meta['twitter:description'] || meta.description || '';
   if (!title && !text) return null;
   return { author: meta['og:site_name'] || '', text: decodeEntities(text), title: decodeEntities(title).trim(), thumb: meta['og:image'] || '', via: 'web' };

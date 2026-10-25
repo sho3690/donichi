@@ -1,14 +1,11 @@
 // Actions 用: 鍵の確認と、暗号化した data/state.json の読み書き。
 import { readFile, writeFile } from 'node:fs/promises';
-import os from 'node:os';
 import { keysFrom, seal, open, b64u } from '../crypto.js';
 import { emptyState } from '../logic.js';
 
 export const ROOT = new URL('..', import.meta.url);
 const STATE = new URL('data/state.json', ROOT);
 export const fail = s => { console.log(`::error::${s}`); process.exit(1); };
-// Claude に渡す本文の受け渡し用（リポジトリの外。コミットされない）
-export const tmpPath = name => `${process.env.RUNNER_TEMP || os.tmpdir()}/donichi-${name}.json`;
 
 export async function loadKeys() {
   const KEY = process.env.DONICHI_KEY;

@@ -106,10 +106,9 @@ export function decodeEntities(s) {
     .replace(/&nbsp;/g, ' ').replace(/&mdash;/g, '—').replace(/&hellip;/g, '…').replace(/&amp;/g, '&');
 }
 export function htmlToText(html) {
-  return decodeEntities(String(html ?? '')
+  return decodeEntities(String(html ?? '').slice(0, 60000)
     .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n')
-    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    .replace(/<[^>]{0,2000}>/g, '')).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}]/gu;
 export const stripEmoji = s => String(s).replace(EMOJI, '').replace(/\s{2,}/g, ' ').trim();
@@ -225,7 +224,7 @@ export function extractDates(text, today) {
   const toks = [];
   const take = (re, fn) => { for (const m of t.matchAll(re)) { if (toks.some(k => m.index < k.end && m.index + m[0].length > k.start)) continue; const s = fn(m); if (s) toks.push({ start: m.index, end: m.index + m[0].length, ymd: s }); } };
   take(/(20\d{2})\s*[/.\-年]\s*(\d{1,2})\s*[/.\-月]\s*(\d{1,2})\s*日?/g, m => { const s = `${m[1]}-${pad(m[2])}-${pad(m[3])}`; return validYmd(s) ? s : null; });
-  take(/(?<![\d/.\-])(\d{1,2})\s*(?:\/|月)\s*(\d{1,2})(?:\s*日)?(?![\d:/%]|\s*(?:[時分人円個名点杯本枚皿倍]|サイズ|カット|ホール|人前|程度|切れ))/g, m => (+m[1] >= 1 && +m[1] <= 12 ? inferYear(+m[1], +m[2], today) : null));
+  take(/(?<![\d/.\-])(\d{1,2})\s*(?:\/|月)\s*(\d{1,2})(?:\s*日)?(?![\d:/%]|\s*(?:[時分人円個名点杯本枚皿倍程]|サイズ|カット|ホール|人前|切れ|ほど|くらい|ぐらい))/g, m => (+m[1] >= 1 && +m[1] <= 12 ? inferYear(+m[1], +m[2], today) : null));
   toks.sort((a, b) => a.start - b.start);
   const WEEKDAY_PAREN = /^\s*(?:[(（][^)）]{0,6}[)）])?/;
   const out = [];
@@ -234,7 +233,9 @@ export function extractDates(text, today) {
     const after = t.slice(a.end).replace(WEEKDAY_PAREN, '');
     const before = t.slice(Math.max(0, a.start - 3), a.start);
     if (/(味|評価|星|★|☆|点数|満足度|コスパ|雰囲気|接客|サービス|おすすめ度|リピ度|総合|映え度|混雑度)\s*[:：]?\s*$/.test(t.slice(Math.max(0, a.start - 8), a.start)) || /^\s*点/.test(after)) continue;   // 評価「味 4/5」
-    if (/^\s*(?:は|が|も)?\s*(?:休み|お休み|休業|定休|休館|休店|close|CLOSE)/.test(after)) continue;   // 「12/31は休み」は行ける日ではない
+    // 「12/31は休み」「12/31・1/1は休み」「12/29〜1/3は休業」は行ける日ではない
+    const CLOSED = /^(?:\s*(?:[・,、&]|~|-)\s*(?:\d{1,2}\s*[/月]\s*)?\d{1,2}\s*日?(?:\s*[(（][^)）]{0,6}[)）])?)*\s*(?:は|が|も)?\s*(?:休み|お休み|休業|定休|休館|休店|close|CLOSE)/;
+    if (CLOSED.test(after)) { while (toks[i + 1] && /^[\s・,、&~\-日()（）月火水木金土祝]*$/.test(t.slice(a.end, toks[i + 1].start))) i++; continue; }
     const sep = after.match(/^\s*(?:~|-|から|より)\s*/);
     if (sep) {
       const rest = after.slice(sep[0].length);
@@ -363,7 +364,8 @@ export function extractInfo({ text = '', title = '', author = '', note = '', pla
   // 日付（イベントらしい文脈のときだけ信用する。訪問日などは捨てる）
   // 営業時間の「11:00〜18:00」の「〜」で催し扱いにしない
   const noTimes = body.replace(/\d{1,2}[:時]\d{0,2}\s*[~\-]\s*\d{1,2}[:時]\d{0,2}/g, ' ');
-  const eventish = /(開催|期間|会期|日時|日程|限定|まで|イベント|展|フェス|マルシェ|ポップアップ|pop ?up|祭|ライブ|花火|出店|販売)/i.test(noTimes);
+  // 単発の日付を信じるのは、はっきり催しとわかる言葉があるときだけ（「数量限定」「販売」などでは信じない）
+  const eventish = /(開催|会期|日時|日程|イベント|展示|展覧会|個展|企画展|写真展|フェス|マルシェ|ポップアップ|pop ?up|祭り?|ライブ|花火|出店|蚤の市|フリマ)/i.test(noTimes);
   const bodyN = normalizeText(body);
   let dates = extractDates(body, today).filter(r => {
     const ctx = bodyN.slice(Math.max(0, r.pos - 12), r.pos + 18);
@@ -763,7 +765,8 @@ export function planWeekend(state, wk, { weather = {}, today, by = 'auto', now =
 
 // その枠の時間帯に合うか（夜の店を午前に入れない・1日かかるものは「1日」枠だけ）
 export function fitsSlot(info, slot) {
-  if (slot === 'day' || info.duration === 'full') return slot === 'day' && info.duration === 'full';
+  if (slot === 'day') return true;                       // 「1日」枠の入れ替えは何でも（時間帯は入れたものに合わせる）
+  if (info.duration === 'full') return false;
   const ok = { morning: ['am'], day: ['am', 'pm'], night: ['night'], any: ['am', 'pm', 'night'] }[info.timeOfDay] || ['am', 'pm', 'night'];
   return ok.includes(slot);
 }
@@ -792,7 +795,16 @@ export function swapSlot(state, plan, index, { today } = {}) {
   const next = rankForSlot(state, p, s.date, s.slot, { today }).find(c => !c.skipped);
   s.itemId = next ? next.item.id : null;
   s.reason = next ? next.reason : '';
+  if (next) s.slot = slotAfterReplace(state, p, index, next.info);
   return p;
+}
+// 入れ替えたあとの時間帯（「1日」枠に1日かからないものを入れたら、合う時間帯へ）
+export function slotAfterReplace(state, plan, index, info) {
+  const s = plan.slots[index];
+  if (s.slot !== 'day') return s.slot;
+  if (info.duration === 'full') return 'day';
+  const taken = plan.slots.filter((x, i) => i !== index && x.date === s.date && has(state.items, x.itemId));
+  return freeSlotFor(info, taken, 3) || 'pm';
 }
 
 // ---- 定期の片づけ（Actions が実行） ----

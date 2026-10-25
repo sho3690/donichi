@@ -262,3 +262,24 @@ test('入れ替えの候補は枠の時間帯に合うものだけ', () => {
   const night = rankForSlot(st, plan, '2026-10-31', 'night', { today: TODAY }).map(c => c.item.id);
   assert.deepEqual(night, ['BAR']);
 });
+
+test('日付の誤検出（2回目の指摘）', () => {
+  const T = '2026-10-26';
+  assert.deepEqual(extractInfo({ text: '年末年始 12/29〜1/3 は休業します。イベント開催中のカフェ' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '12/31・1/1は休み。マルシェ出店あり' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '待ち時間は1/3ほど短縮。イベント開催' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '数量限定のパフェ 10/20' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '期間：10/24〜11/3 開催（月曜休み）' }, T).dates, [{ start: '2026-10-24', end: '2026-11-03' }]);
+  assert.deepEqual(extractInfo({ text: 'マルシェ開催 11/8(日)' }, T).dates, [{ start: '2026-11-08', end: '2026-11-08' }]);
+});
+
+test('「1日」枠の入れ替えは何でも入り、時間帯が変わる', () => {
+  const st = emptyState();
+  const add = (id, note) => applyEvent(st, { id: `b-${id}`, t: 'item.add', by: 'a', at: 0, item: { id, note } }, { today: TODAY });
+  add('TRIP', '箱根へ日帰り旅行 温泉');
+  add('CAFE', '中目黒の喫茶店 プリン');
+  const plan = { key: '2026-10-31', days: ['2026-10-31', '2026-11-01'], slots: [{ date: '2026-10-31', slot: 'day', itemId: 'TRIP', reason: '' }], weather: {}, skipped: [] };
+  const next = swapSlot(st, plan, 0, { today: TODAY });
+  assert.equal(next.slots[0].itemId, 'CAFE');
+  assert.equal(next.slots[0].slot, 'pm');
+});

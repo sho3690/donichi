@@ -1,7 +1,9 @@
 // GitHub Actions 側で投稿の本文を取る（Instagram / Threads / その他のサイト / TikTok の短縮リンク）。
 // 受け取った URL しか開かない。名前を引いて社内・自分自身などの宛先になるものは、転送の途中も含めて開かない。
 
-import { lookup } from 'node:dns/promises';
+import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { clientFetchers, parseInstagram, parseThreads, parseGeneric } from '../sources.js';
 import { parseUrl } from '../logic.js';
@@ -13,59 +15,74 @@ const MAX_HOPS = 5;
 
 export function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
+    const [a, b, c, d] = ip.split('.').map(Number);
     return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19));
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))
+      || (a === 192 && b === 0 && c === 0) || (a === 168 && b === 63 && c === 129 && d === 16);   // 168.63.129.16 = クラウドの内部向け
   }
   if (net.isIPv6(ip)) {
     const x = ip.toLowerCase();
     if (x.startsWith('::ffff:')) return isPrivateIp(x.slice(7));
-    return x === '::' || x === '::1' || /^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith('ff');
+    return x === '::' || x === '::1' || /^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith('ff') || x.startsWith('64:ff9b');
   }
   return true;
 }
 
-export async function safeTarget(url) {
+// URL の形だけで断れるもの
+function shapeOk(url) {
   let u;
   try { u = new URL(url); } catch { return false; }
   if (!/^https?:$/.test(u.protocol) || u.username || u.password) return false;
   if (u.port && !['80', '443'].includes(u.port)) return false;
   const host = u.hostname.replace(/\.$/, '').toLowerCase();
   if (!host.includes('.') || net.isIP(host.replace(/^\[|\]$/g, ''))) return false;
-  if (/(^|\.)(localhost|local|internal|intranet|lan|home|corp|localdomain)$/.test(host)) return false;
-  try {
-    const addrs = await lookup(host, { all: true });
-    return addrs.length > 0 && addrs.every(a => !isPrivateIp(a.address));
-  } catch { return false; }
+  return !/(^|\.)(localhost|local|internal|intranet|lan|home|corp|localdomain)$/.test(host);
+}
+
+// 接続するその瞬間に名前を引いて確かめる（確かめた後で宛先を差し替える手口も防ぐ）
+function guardedLookup(hostname, options, cb) {
+  dns.lookup(hostname, { family: options?.family || 0, all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs.length || addrs.some(a => isPrivateIp(a.address))) return cb(Object.assign(new Error('blocked address'), { code: 'EBLOCKED' }));
+    if (options?.all) cb(null, addrs); else cb(null, addrs[0].address, addrs[0].family);
+  });
+}
+
+export async function safeTarget(url) {
+  if (!shapeOk(url)) return false;
+  return new Promise(res => guardedLookup(new URL(url).hostname.replace(/\.$/, ''), {}, err => res(!err)));
+}
+
+function request(url, ua, signal) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.get(u, { headers: { 'User-Agent': ua, 'Accept-Language': 'ja,en;q=0.8', Accept: 'text/html' }, lookup: guardedLookup, signal, timeout: 12000 }, resolve);
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+  });
 }
 
 async function readCapped(res) {
-  const reader = res.body.getReader();
   const chunks = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value); total += value.length;
-    if (total >= MAX_BYTES) { await reader.cancel(); break; }
+  for await (const c of res) {
+    chunks.push(c); total += c.length;
+    if (total >= MAX_BYTES) { res.destroy(); break; }
   }
-  const buf = new Uint8Array(Math.min(total, MAX_BYTES));
-  let off = 0;
-  for (const c of chunks) { const n = Math.min(c.length, buf.length - off); buf.set(c.subarray(0, n), off); off += n; if (off >= buf.length) break; }
-  return new TextDecoder().decode(buf);
+  return Buffer.concat(chunks).subarray(0, MAX_BYTES).toString('utf8');
 }
 
-async function getHtml(url, ua, timeout = 12000) {
+async function getHtml(url, ua, timeout = 15000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeout);
   try {
     let current = url;
     for (let hop = 0; hop <= MAX_HOPS; hop++) {
-      if (!(await safeTarget(current))) throw new Error('blocked target');
-      const res = await fetch(current, { headers: { 'User-Agent': ua, 'Accept-Language': 'ja,en;q=0.8', Accept: 'text/html' }, redirect: 'manual', signal: ctl.signal });
-      const loc = res.headers.get('location');
-      if (res.status >= 300 && res.status < 400 && loc) { await res.body?.cancel(); current = new URL(loc, current).href; continue; }
-      if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status}`); }
+      if (!shapeOk(current)) throw new Error('blocked target');
+      const res = await request(current, ua, ctl.signal);
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { res.resume(); current = new URL(res.headers.location, current).href; continue; }
+      if (res.statusCode < 200 || res.statusCode >= 300) { res.resume(); throw new Error(`HTTP ${res.statusCode}`); }
       return { html: await readCapped(res), finalUrl: current };
     }
     throw new Error('too many redirects');
