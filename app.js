@@ -13,6 +13,23 @@ const ls = {
   json: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
 };
 
+// 鍵は「取り出せない形（non-extractable）」で IndexedDB に置き、親鍵そのものは保存しない。
+// sho3690.github.io は他のアプリと同じ置き場なので、万一そちらに不正なスクリプトが入っても鍵を持ち出せないように。
+const keyStore = {
+  db: null,
+  async open() {
+    if (!this.db) this.db = await new Promise((res, rej) => { const r = indexedDB.open('donichi', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    return this.db;
+  },
+  async req(mode, fn) {
+    const db = await this.open();
+    return new Promise((res, rej) => { const tx = db.transaction('kv', mode); const q = fn(tx.objectStore('kv')); tx.oncomplete = () => res(q?.result); tx.onerror = () => rej(tx.error); });
+  },
+  get: k => keyStore.req('readonly', st => st.get(k)).catch(() => undefined),
+  set: (k, v) => keyStore.req('readwrite', st => st.put(v, k)).then(() => true, () => false),
+  del: k => keyStore.req('readwrite', st => st.delete(k)).catch(() => {}),
+};
+
 // ---- 小さな道具 ----
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
@@ -55,11 +72,15 @@ async function boot() {
   const joinPass = hash.get('join');
   if (linkKey || joinPass) history.replaceState(null, '', `${location.pathname}${location.search}#/weekend`);
 
-  let master = linkKey || ls.get(K.master);
-  if (joinPass) master = b64u.enc(await deriveMaster(joinPass, app.cfg.salt, app.cfg.iterations));
-  if (master && !(await useKey(master))) {
-    ls.del(K.master);
-    return showLock({ error: linkKey ? 'この招待リンクは使えなくなっています。新しいリンクをもらってください。' : '合言葉が変わりました。新しい招待リンクを開くか、合言葉を入れ直してください。' });
+  const legacy = ls.get(K.master);   // 以前の版が保存した親鍵は、取り出せない形に移してから消す
+  const master = linkKey || (joinPass ? b64u.enc(await deriveMaster(joinPass, app.cfg.salt, app.cfg.iterations)) : null) || legacy;
+  ls.del(K.master);
+  if (master) {
+    if (!(await useKey(b64u.dec(master)))) return showLock({ error: linkKey ? 'この招待リンクは使えなくなっています。新しいリンクをもらってください。' : '合言葉が変わりました。新しい招待リンクを開くか、合言葉を入れ直してください。' });
+  } else {
+    const saved = await keyStore.get('keys');
+    if (saved && saved.check === app.cfg.check && saved.aes) app.keys = saved;
+    else if (saved) { await keyStore.del('keys'); return showLock({ error: '合言葉が変わりました。新しい招待リンクを開くか、合言葉を入れ直してください。' }); }
   }
   if (!app.keys) return showLock();
   app.name = ls.get(K.name) || '';
@@ -67,11 +88,12 @@ async function boot() {
   start();
 }
 
-async function useKey(masterB64) {
+async function useKey(masterBytes) {
   try {
-    const keys = await keysFrom(b64u.dec(masterB64));
+    const keys = await keysFrom(masterBytes);
     if (keys.check !== app.cfg.check) return false;
-    app.keys = keys; ls.set(K.master, masterB64);
+    app.keys = keys;
+    await keyStore.set('keys', { aes: keys.aes, topic: keys.topic, check: keys.check });   // 保存できない環境では、この画面を開いている間だけ使う
     return true;
   } catch { return false; }
 }
@@ -107,8 +129,7 @@ function showLock({ error = '', nameOnly = false } = {}) {
     if (bad) { (nameOnly || pw.value.trim() ? nameIn : pw).focus(); return; }
     if (!nameOnly) {
       submit.classList.add('loading'); submit.disabled = true;
-      const m = b64u.enc(await deriveMaster(pw.value, app.cfg.salt, app.cfg.iterations));
-      const ok = await useKey(m);
+      const ok = await useKey(await deriveMaster(pw.value, app.cfg.salt, app.cfg.iterations));
       submit.classList.remove('loading'); submit.disabled = false;
       if (!ok) {
         errPw.hidden = false; errPw.textContent = '合言葉が違います。招待してくれた人に確かめてください。';
@@ -255,7 +276,10 @@ function recompute() {
   const st = structuredClone(app.snap);
   const evs = [...app.relay.values()].sort((a, b) => (a.time - b.time) || ((a.at || 0) - (b.at || 0)));
   for (const ev of [...evs, ...app.outbox]) { try { L.applyEvent(st, ev); } catch { /* おかしなイベントは飛ばす */ } }
-  app.st = st;
+  // 中身が変わったときだけ描き直す（開いた折りたたみ・入力中のフォーカス・削除の確認を消さない）
+  const sig = JSON.stringify(st);
+  if (sig === app.sig) return;
+  app.sig = sig; app.st = st;
   render();
 }
 
@@ -289,6 +313,11 @@ async function flushOutbox() {
       const ev = app.outbox[0];
       let body = await seal(app.keys, ev);
       for (let step = 0; body.length > MAX_BODY && step < 7; step++) body = await seal(app.keys, shrink(ev, step));
+      if (body.length > MAX_BODY) {   // 縮めても送れないものは取り消す（後ろの変更を止めない）
+        app.outbox.shift(); saveOutbox(); recompute();
+        toast('長すぎて送れない変更を1件取り消しました');
+        continue;
+      }
       const res = await publish(app.cfg.relay, app.keys.topic, body);
       app.outbox.shift();
       ev.time = res.time;
@@ -616,7 +645,7 @@ function sheetAdd(s) {
 function submitAdd(urlEl, noteEl, err) {
   const raw = urlEl.value.trim();
   const note = noteEl.value.trim();
-  const urls = L.findUrls(raw).filter(u => L.parseUrl(u));
+  const urls = L.findUrls(raw).filter(u => u.length <= 2000 && L.parseUrl(u));
   err.hidden = true; urlEl.setAttribute('aria-invalid', 'false');
   if (raw && !urls.length) { err.hidden = false; err.textContent = 'リンクの形になっていません。https:// から始まるリンクを貼ってください。'; urlEl.setAttribute('aria-invalid', 'true'); urlEl.focus(); return; }
   if (!urls.length && !note) { err.hidden = false; err.textContent = 'リンクかメモのどちらかを入れてください。'; urlEl.setAttribute('aria-invalid', 'true'); urlEl.focus(); return; }
@@ -746,7 +775,7 @@ function sheetPick(s) {
   if (!plan) return null;
   const today = L.jstToday();
   const replacing = s.index != null ? plan.slots[s.index] : null;
-  const slot = replacing ? replacing.slot : 'pm';
+  const slot = replacing ? replacing.slot : null;
   const ranked = L.rankForSlot(st, plan, s.date, slot, { today });
   const body = ranked.length
     ? h('ul', { class: 'pick' }, ranked.slice(0, 30).map(c => h('li', {}, h('button', { type: 'button', 'data-action': 'choose', 'data-id': c.item.id },
@@ -784,10 +813,8 @@ function sheetSettings() {
     h('section', { class: 'settings-group' }, h('h3', {}, h('label', { for: 's-city' }, '天気を見る地域')), citySel,
       h('p', { class: 'help mt' }, '雨の日は屋内、晴れの日は屋外の予定を優先します。')),
     h('section', { class: 'settings-group' }, h('h3', {}, '招待'),
-      h('p', {}, 'このリンクを開いた人は、合言葉なしで入れます。信頼できる人にだけ送ってください。'),
-      h('div', { class: 'actions-row' },
-        h('button', { class: 'btn btn-secondary', type: 'button', 'data-action': 'copy-invite' }, icon('link'), '招待リンクをコピー'),
-        navigator.share && h('button', { class: 'btn btn-secondary', type: 'button', 'data-action': 'share-invite' }, '送る')),
+      h('p', {}, '招待したい人には、あなたが受け取った招待リンクをそのまま送ってください。合言葉を知っていれば、ここで招待リンクを作り直せます。リンクを開いた人は合言葉なしで入れるので、信頼できる人にだけ送ってください。'),
+      inviteForm(),
       members.length && h('div', { class: 'members', 'aria-label': 'メンバー' }, members.map(n => h('span', { class: 'member' }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(n)), n)))),
     h('section', { class: 'settings-group' }, h('h3', {}, '同期'),
       h('p', { class: 'status' }, h('span', { class: `dot ${status[0]}`, 'aria-hidden': 'true' }), status[1], st?.syncedAt ? ` · 最終保存 ${hm(st.syncedAt)}` : ''),
@@ -796,6 +823,29 @@ function sheetSettings() {
     h('section', { class: 'settings-group' }, h('h3', {}, 'この端末'),
       h('p', {}, 'この端末から合言葉を消します。もう一度使うときは招待リンクか合言葉が必要です。'),
       h('div', { class: 'actions-row' }, h('button', { class: 'btn btn-danger btn-sm', type: 'button', 'data-action': 'logout' }, 'この端末から外す'))))];
+}
+
+// 招待リンクを作る（合言葉から親鍵を作り直す。親鍵は端末に保存しない）
+function inviteForm() {
+  const err = h('p', { class: 'err', id: 's-pass-err', hidden: true });
+  const pass = h('input', { class: 'input', id: 's-pass', type: 'password', autocomplete: 'current-password', autocapitalize: 'off', spellcheck: 'false', placeholder: '合言葉', 'aria-describedby': 's-pass-err' });
+  const btn = h('button', { class: 'btn btn-secondary', type: 'submit' }, icon('link'), '招待リンクを作る');
+  return h('form', { class: 'mt', novalidate: true, onsubmit: async e => {
+    e.preventDefault();
+    err.hidden = true; pass.setAttribute('aria-invalid', 'false');
+    if (!pass.value.trim()) { err.hidden = false; err.textContent = '合言葉を入れてください'; pass.setAttribute('aria-invalid', 'true'); pass.focus(); return; }
+    btn.classList.add('loading'); btn.disabled = true;
+    const master = await deriveMaster(pass.value, app.cfg.salt, app.cfg.iterations);
+    const keys = await keysFrom(master);
+    btn.classList.remove('loading'); btn.disabled = false;
+    if (keys.check !== app.cfg.check) { err.hidden = false; err.textContent = '合言葉が違います'; pass.setAttribute('aria-invalid', 'true'); pass.focus(); return; }
+    pass.value = '';
+    const link = `${location.origin}${location.pathname}#k=${b64u.enc(master)}`;
+    if (navigator.share) navigator.share({ title: '土日 DONICHI', text: '週末の予定をいっしょに決めるアプリに招待します', url: link }).catch(() => {});
+    else navigator.clipboard?.writeText(link).then(() => toast('招待リンクをコピーしました'), () => toast('コピーできませんでした'));
+  } },
+  h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'donichi', hidden: true, readonly: true }),
+  h('div', { class: 'with-btn' }, h('label', { class: 'visually-hidden', for: 's-pass' }, '合言葉'), pass, btn), err);
 }
 
 // ================= 操作 =================
@@ -908,16 +958,10 @@ function onAction(e) {
       setPlan(next, `${L.mdw(s.date)}に入れました`, plan);
       break;
     }
-    case 'copy-invite': case 'share-invite': {
-      const link = `${location.origin}${location.pathname}#k=${ls.get(K.master)}`;
-      if (a === 'share-invite' && navigator.share) navigator.share({ title: '土日 DONICHI', text: '週末の予定をいっしょに決めるアプリに招待します', url: link }).catch(() => {});
-      else navigator.clipboard?.writeText(link).then(() => toast('招待リンクをコピーしました'), () => toast('コピーできませんでした'));
-      break;
-    }
     case 'logout': {
       if (!twoStep(el, '本当に外す')) break;
       for (const k of Object.values(K)) ls.del(k);
-      location.replace(location.pathname);
+      keyStore.del('keys').then(() => location.replace(location.pathname));
       break;
     }
     default: break;
@@ -931,6 +975,7 @@ function handleShare() {
   const text = [q.get('url'), q.get('text')].filter(Boolean).join('\n');
   const urls = L.findUrls(text);
   history.replaceState(null, '', `${location.pathname}#/stock`);
+  route();
   openSheet('add', { url: urls.join('\n'), note: urls.length ? text.replace(/https?:\/\/\S+/g, '').trim() : text });
 }
 

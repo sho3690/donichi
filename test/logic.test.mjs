@@ -227,3 +227,38 @@ test('日付の表示', () => {
   assert.equal(dateLabel({ dates: [{ start: '2026-11-01', end: '2026-11-01' }] }, TODAY), '11/1(日)のみ');
   assert.equal(dateLabel({ dates: [{ start: null, end: '2026-11-03' }] }, TODAY), '〜11/3');
 });
+
+test('日付の誤検出を避ける（レビューの指摘）', () => {
+  const T = '2026-10-26';
+  assert.deepEqual(extractInfo({ text: '中目黒のカフェ 味 4/5 雰囲気 5/5 営業時間11:00〜18:00' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: 'ケーキ 1/2サイズもあり 期間限定 11:00〜18:00' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '年末も営業！12/31は休みです。限定メニューあり' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '【2024.12.1 リニューアル】イベント開催中のカフェ' }, T).dates, []);
+  assert.deepEqual(extractInfo({ text: '期間：10/24〜11/3 開催' }, T).dates, [{ start: '2026-10-24', end: '2026-11-03' }]);
+});
+
+test('メモを直すと Claude の読み取りをやり直す・期限切れから戻すと期限を外す', () => {
+  const st = emptyState();
+  applyEvent(st, { id: 'z1', t: 'item.add', by: 'a', at: Date.parse('2026-10-26T12:00:00+09:00'), item: { id: 'M', note: 'メモ' } });
+  st.items.M.ai = { dates: [] }; st.items.M.aiTries = 1;
+  applyEvent(st, { id: 'z2', t: 'item.edit', by: 'a', itemId: 'M', note: '期間：11/1〜11/3 開催' }, { today: '2026-10-26' });
+  assert.equal(st.items.M.ai, null);
+  assert.deepEqual(effectiveInfo(st.items.M).dates, [{ start: '2026-11-01', end: '2026-11-03' }]);
+  st.items.M.status = 'expired';
+  applyEvent(st, { id: 'z3', t: 'item.status', by: 'a', itemId: 'M', status: 'inbox' }, { today: '2026-11-10' });
+  assert.equal(maintain(st, '2026-11-10'), false);
+  assert.equal(st.items.M.status, 'inbox');
+});
+
+test('入れ替えの候補は枠の時間帯に合うものだけ', () => {
+  const st = emptyState();
+  const add = (id, note) => applyEvent(st, { id: `a-${id}`, t: 'item.add', by: 'a', at: 0, item: { id, note } }, { today: TODAY });
+  add('BAR', '恵比寿の夜景バー ディナー');
+  add('ART', '上野の美術館 企画展');
+  add('TRIP', '箱根へ日帰り旅行 温泉');
+  const plan = { key: '2026-10-31', days: ['2026-10-31', '2026-11-01'], slots: [], weather: {}, skipped: [] };
+  const am = rankForSlot(st, plan, '2026-10-31', 'am', { today: TODAY }).map(c => c.item.id);
+  assert.ok(am.includes('ART') && !am.includes('BAR') && !am.includes('TRIP'));
+  const night = rankForSlot(st, plan, '2026-10-31', 'night', { today: TODAY }).map(c => c.item.id);
+  assert.deepEqual(night, ['BAR']);
+});

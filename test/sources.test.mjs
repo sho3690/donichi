@@ -36,3 +36,11 @@ test('X の oEmbed', () => {
   const r = parseXOembed({ author_name: 'a', html: '<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">渋谷で古着市<br>11/1 <a href="https://t.co/x">pic.twitter.com/abc</a></p>&mdash; a (@a)</blockquote>' });
   assert.equal(r.text, '渋谷で古着市\n11/1');
 });
+
+test('巨大なページや壊れた文字参照でも固まらない・落ちない', () => {
+  const t0 = Date.now();
+  const r = parseGeneric(`<meta property="og:title" content="${'a'.repeat(1_000_000)}`);
+  assert.ok(Date.now() - t0 < 1000, '1秒以内');
+  assert.equal(r, null);
+  assert.equal(parseGeneric('<meta name="description" content="x&#x110000;y&#55296;z">').text, 'xyz');
+});

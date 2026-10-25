@@ -56,10 +56,11 @@ export async function fetchInBrowser(item) {
 // ---- HTML の解析（サーバー側で使う。テストしやすいようここに置く） ----
 export function metaTags(html) {
   const out = {};
-  for (const m of String(html).matchAll(/<meta\s+[^>]*>/gi)) {
+  // 長さに上限のある素直な正規表現だけを使う（巨大なページで固まらないように）
+  for (const m of String(html).matchAll(/<meta\s[^>]{0,20000}>/gi)) {
     const tag = m[0];
-    const key = (tag.match(/(?:property|name)\s*=\s*"([^"]+)"/i) || tag.match(/(?:property|name)\s*=\s*'([^']+)'/i) || [])[1];
-    const val = (tag.match(/content\s*=\s*"([\s\S]*?)"\s*\/?>?$/i) || tag.match(/content\s*=\s*"([^"]*)"/i) || [])[1];
+    const key = (tag.match(/(?:property|name)\s*=\s*["']([^"']{1,100})["']/i) || [])[1];
+    const val = (tag.match(/content\s*=\s*"([^"]*)"/i) || tag.match(/content\s*=\s*'([^']*)'/i) || [])[1];
     if (key && val != null && !(key.toLowerCase() in out)) out[key.toLowerCase()] = decodeEntities(val);
   }
   return out;

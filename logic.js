@@ -97,10 +97,11 @@ export function autoPlanDay(wk) {
 }
 
 // ---- 文字の整形 ----
+const codePoint = c => (Number.isInteger(c) && c > 0 && c <= 0x10ffff && !(c >= 0xd800 && c <= 0xdfff) ? String.fromCodePoint(c) : '');
 export function decodeEntities(s) {
   return String(s ?? '')
-    .replace(/&#x([0-9a-f]+);/gi, (_, x) => String.fromCodePoint(parseInt(x, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&#x([0-9a-f]{1,6});/gi, (_, x) => codePoint(parseInt(x, 16)))
+    .replace(/&#(\d{1,7});/g, (_, d) => codePoint(+d))
     .replace(/&quot;/g, '"').replace(/&apos;|&#039;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ').replace(/&mdash;/g, '—').replace(/&hellip;/g, '…').replace(/&amp;/g, '&');
 }
@@ -224,7 +225,7 @@ export function extractDates(text, today) {
   const toks = [];
   const take = (re, fn) => { for (const m of t.matchAll(re)) { if (toks.some(k => m.index < k.end && m.index + m[0].length > k.start)) continue; const s = fn(m); if (s) toks.push({ start: m.index, end: m.index + m[0].length, ymd: s }); } };
   take(/(20\d{2})\s*[/.\-年]\s*(\d{1,2})\s*[/.\-月]\s*(\d{1,2})\s*日?/g, m => { const s = `${m[1]}-${pad(m[2])}-${pad(m[3])}`; return validYmd(s) ? s : null; });
-  take(/(?<![\d/.\-])(\d{1,2})\s*(?:\/|月)\s*(\d{1,2})(?:\s*日)?(?![\d:/%]|\s*[時分人円個名])/g, m => (+m[1] >= 1 && +m[1] <= 12 ? inferYear(+m[1], +m[2], today) : null));
+  take(/(?<![\d/.\-])(\d{1,2})\s*(?:\/|月)\s*(\d{1,2})(?:\s*日)?(?![\d:/%]|\s*(?:[時分人円個名点杯本枚皿倍]|サイズ|カット|ホール|人前|程度|切れ))/g, m => (+m[1] >= 1 && +m[1] <= 12 ? inferYear(+m[1], +m[2], today) : null));
   toks.sort((a, b) => a.start - b.start);
   const WEEKDAY_PAREN = /^\s*(?:[(（][^)）]{0,6}[)）])?/;
   const out = [];
@@ -232,6 +233,8 @@ export function extractDates(text, today) {
     const a = toks[i];
     const after = t.slice(a.end).replace(WEEKDAY_PAREN, '');
     const before = t.slice(Math.max(0, a.start - 3), a.start);
+    if (/(味|評価|星|★|☆|点数|満足度|コスパ|雰囲気|接客|サービス|おすすめ度|リピ度|総合|映え度|混雑度)\s*[:：]?\s*$/.test(t.slice(Math.max(0, a.start - 8), a.start)) || /^\s*点/.test(after)) continue;   // 評価「味 4/5」
+    if (/^\s*(?:は|が|も)?\s*(?:休み|お休み|休業|定休|休館|休店|close|CLOSE)/.test(after)) continue;   // 「12/31は休み」は行ける日ではない
     const sep = after.match(/^\s*(?:~|-|から|より)\s*/);
     if (sep) {
       const rest = after.slice(sep[0].length);
@@ -252,7 +255,7 @@ export function extractDates(text, today) {
       out.push({ start: a.ymd, end: null, pos: a.start }); continue;    // 11/1 ~（開始のみ）
     }
     if (/[~-]\s*$/.test(before) || /^\s*まで/.test(after)) { out.push({ start: null, end: a.ymd, pos: a.start }); continue; }   // ~11/3, 11/3まで
-    if (/^\s*(?:オープン|OPEN|open|グランドオープン|NEW OPEN|開業|から|より|以降)/.test(after)) { out.push({ start: a.ymd, end: null, pos: a.start }); continue; }
+    if (/^\s*(?:オープン|OPEN|open|グランドオープン|NEW OPEN|開業|リニューアル|から|より|以降)/.test(after)) { out.push({ start: a.ymd, end: null, pos: a.start }); continue; }
     out.push({ start: a.ymd, end: a.ymd, pos: a.start });
     let more = after;                                                    // 11/1(土)・2(日)
     for (let m; (m = more.match(/^\s*[・,、&]\s*(\d{1,2})\s*日?(?![\d/月:])\s*(?:[(（][^)）]{0,6}[)）])?/)); more = more.slice(m[0].length)) {
@@ -260,8 +263,9 @@ export function extractDates(text, today) {
       if (validYmd(s2) && s2 > a.ymd) out.push({ start: s2, end: s2, pos: a.start });
     }
   }
-  // 重複を除く
-  return out.filter((r, i) => out.findIndex(o => o.start === r.start && o.end === r.end) === i);
+  // 重複を除き、30日より前に終わったもの（昔の告知・リニューアル日など）は捨てる
+  return out.filter((r, i) => out.findIndex(o => o.start === r.start && o.end === r.end) === i)
+    .filter(r => diffDays(r.end || r.start, today) <= 30);
 }
 // pos を落とした形（保存・表示用）
 export function extractDateRanges(text, today) {
@@ -357,7 +361,9 @@ export function extractInfo({ text = '', title = '', author = '', note = '', pla
   name = clip(name, 32);
 
   // 日付（イベントらしい文脈のときだけ信用する。訪問日などは捨てる）
-  const eventish = /(開催|期間|会期|日時|日程|限定|まで|イベント|展|フェス|マルシェ|ポップアップ|pop ?up|オープン|open|~|から|祭|ライブ|花火|出店|予約|受付|販売)/i.test(body);
+  // 営業時間の「11:00〜18:00」の「〜」で催し扱いにしない
+  const noTimes = body.replace(/\d{1,2}[:時]\d{0,2}\s*[~\-]\s*\d{1,2}[:時]\d{0,2}/g, ' ');
+  const eventish = /(開催|期間|会期|日時|日程|限定|まで|イベント|展|フェス|マルシェ|ポップアップ|pop ?up|祭|ライブ|花火|出店|販売)/i.test(noTimes);
   const bodyN = normalizeText(body);
   let dates = extractDates(body, today).filter(r => {
     const ctx = bodyN.slice(Math.max(0, r.pos - 12), r.pos + 18);
@@ -505,12 +511,13 @@ export function applyEvent(state, ev, { today } = {}) {
       const e = sanitizeInfo(ev.edits);
       it.edits = { ...(it.edits || {}) };
       for (const [k, v] of Object.entries(e)) { if (v === null || (k !== 'dates' && k !== 'closedDays' && v === '')) delete it.edits[k]; else it.edits[k] = v; }
-      if (typeof ev.note === 'string') { it.note = str(ev.note, 3000); refreshAuto(it, today); }
+      if (typeof ev.note === 'string' && str(ev.note, 3000) !== it.note) { it.note = str(ev.note, 3000); it.ai = null; it.aiTries = 0; refreshAuto(it, today); }
       it.updatedAt = at;
       break;
     }
     case 'item.status': {
       if (!it || !ITEM_STATUSES.includes(ev.status)) break;
+      if (it.status === 'expired' && ev.status === 'inbox') it.edits = { ...(it.edits || {}), dates: [] };
       it.status = ev.status; it.doneAt = ev.status === 'done' ? at : 0; it.updatedAt = at;
       break;
     }
@@ -754,14 +761,24 @@ export function planWeekend(state, wk, { weather = {}, today, by = 'auto', now =
   return { key: wk.key, days: wk.days, slots, weather: wx, skipped: [...skipped], by, createdAt: now, closed: false };
 }
 
+// その枠の時間帯に合うか（夜の店を午前に入れない・1日かかるものは「1日」枠だけ）
+export function fitsSlot(info, slot) {
+  if (slot === 'day' || info.duration === 'full') return slot === 'day' && info.duration === 'full';
+  const ok = { morning: ['am'], day: ['am', 'pm'], night: ['night'], any: ['am', 'pm', 'night'] }[info.timeOfDay] || ['am', 'pm', 'night'];
+  return ok.includes(slot);
+}
+
 // ある枠に入れられる候補を、合う順に並べる（「入れ替え」「ストックから選ぶ」用）
+// slot を渡すとその枠に合うものだけ、null ならその日の空き枠に入るものだけ
 export function rankForSlot(state, plan, date, slot, { today } = {}) {
   today = today || jstToday();
   const wk = { key: plan.key, days: plan.days };
   const inPlan = new Set(plan.slots.map(s => s.itemId).filter(Boolean));
-  const dayItems = plan.slots.filter(s => s.date === date && has(state.items, s.itemId) && s.slot !== slot).map(s => ({ info: effectiveInfo(state.items[s.itemId]) }));
+  const taken = plan.slots.filter(s => s.date === date && has(state.items, s.itemId) && s.slot !== slot);
+  const dayItems = taken.map(s => ({ info: effectiveInfo(state.items[s.itemId]) }));
   return candidates(state, wk, today)
     .filter(c => !inPlan.has(c.item.id) && c.days.includes(date))
+    .filter(c => (slot ? fitsSlot(c.info, slot) : !!freeSlotFor(c.info, taken, 3)))
     .map(c => ({ ...c, ...scoreOn(c, date, dayItems, plan.weather, plan.key), skipped: plan.skipped.includes(c.item.id) }))
     .sort((a, b) => (a.skipped - b.skipped) || b.score - a.score);
 }
