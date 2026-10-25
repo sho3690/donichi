@@ -4,6 +4,12 @@ name: 同期と週末の割り振り
 # 木曜の朝7時（日本時間）を過ぎた最初の回で、今週末の予定を自動で割り振る。
 # GitHub の定時実行は遅れることがあるので、割り振りは「木曜7時以降で、まだ無ければ作る」で判定している。
 #
+# 15分ごとに動かすしくみ:
+# - 新しいリポジトリでは GitHub の定時実行（schedule）が一度も起動しないことがある（2026年に多数の報告）。
+#   そこで各回の next ジョブが、環境 interval の待ち時間（15分。待つ間はマシンを使わない）のあとで次の回を予約する。
+# - 自分より新しい回が動いていれば予約しない（予約が二重になっても一本にまとまる）。
+# - schedule は予約が途切れたときの予備（1時間ごと）。止めるときは gh workflow disable、再開は enable のあと手動で1回動かす。
+#
 # 守り:
 # - Claude Code（外部パッケージ）は別のジョブ（別のマシン）で動かす。そこにはデータの鍵（DONICHI_KEY）も書き込み権限も無い。
 #   本文と結果の受け渡しは、受け渡し専用の鍵（AI_KEY）で封をしてジョブの出力で行う。
@@ -11,12 +17,8 @@ name: 同期と週末の割り振り
 # - checkout に資格情報を残さず、push のときだけトークンを使う。外部の Action はコミットで固定。
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"   # 混み合う毎時0分を避ける
+    - cron: "47 * * * *"   # 予備。混み合う毎時0分を避ける
   workflow_dispatch:
-
-concurrency:
-  group: sync
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -25,6 +27,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    concurrency:
+      group: state
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -81,6 +86,9 @@ jobs:
     if: always() && needs.sync.result == 'success' && needs.sync.outputs.need_ai != '' && needs.sync.outputs.need_ai != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: state
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -102,3 +110,29 @@ jobs:
         env:
           PUSH_TOKEN: ${{ github.token }}
         run: bash scripts/push-state.sh "Claude の読み取り"
+
+  next:
+    # 15分待ってから次の回を予約する（待つ間はマシンを使わない）。同期の成否に関係なく続ける
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: interval
+      deployment: false
+    permissions:
+      actions: write
+    steps:
+      - name: 次の回を予約する
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/auto-sync.yml" --jq .state)
+          if [ "$state" != "active" ]; then echo "止めてあるので予約しません"; exit 0; fi
+          newer=$(gh run list -R "$GITHUB_REPOSITORY" --workflow auto-sync.yml --limit 20 --json databaseId,status \
+            --jq "[.[] | select(.databaseId > $GITHUB_RUN_ID and .status != \"completed\")] | length")
+          if [ "$newer" != "0" ]; then echo "新しい回が動いているので、予約はそちらに任せます"; exit 0; fi
+          for i in 1 2 3 4 5; do
+            gh workflow run auto-sync.yml -R "$GITHUB_REPOSITORY" --ref main && { echo "次の回を予約しました"; exit 0; }
+            sleep 20
+          done
+          exit 1

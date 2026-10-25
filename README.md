@@ -37,6 +37,11 @@ Instagram・Threads・X・TikTok などで見つけた「行きたい所」の�
   同期の結果は Claude より先に保存します。GitHub への書き込み権限は push の手順だけで使い、外部の Action はコミットの番号で固定しています。
 - 投稿の取得は、接続するその瞬間に相手の IP を確かめ、社内・クラウド内部向けの宛先には接続しません。
 - **Actions のログは公開**されるので、件数以外（題名・URL・名前）は出力しないようにしています。
+- **15分ごとに動かすしくみ**: 新しいリポジトリでは GitHub の定時実行が一度も起動しないことがあるため、
+  各回が「15分待ってから次の回を予約する」ようにしています（環境 `interval` の待ち時間。待つ間はマシンを使いません）。
+  定時実行は途切れたときの予備（1時間ごと）です。
+  止めるとき: `gh workflow disable auto-sync.yml -R sho3690/donichi`
+  / 再開するとき: `gh workflow enable auto-sync.yml -R sho3690/donichi && gh workflow run auto-sync.yml -R sho3690/donichi`
 - TikTok / X / YouTube は、追加したその場でブラウザから本文を取ります（公式の oEmbed。X は予備に fxtwitter）。
 
 ## 割り振りのルール（logic.js の planWeekend）
