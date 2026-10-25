@@ -1,0 +1,46 @@
+name: 同期と週末の割り振り
+
+# 15分ごと: 中継に届いた追加・変更を取り込み、投稿の本文を読み取り、暗号化して保存する。
+# 木曜の朝7時（日本時間）を過ぎた最初の回で、今週末の予定を自動で割り振る。
+# GitHub の定時実行は遅れることがあるので、割り振りは「木曜7時以降で、まだ無ければ作る」で判定している。
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 同期する
+        env:
+          DONICHI_KEY: ${{ secrets.DONICHI_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: node scripts/sync.mjs
+
+      - name: 保存する
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/state.json
+          if git diff --staged --quiet; then
+            echo "変更はありません"
+          else
+            git commit -m "同期 $(TZ=Asia/Tokyo date '+%m/%d %H:%M')"
+            git pull --rebase origin main
+            git push
+          fi
