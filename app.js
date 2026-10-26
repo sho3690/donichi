@@ -444,7 +444,7 @@ function emptyPlan(st, wk, today) {
     h('span', { class: 'ic-wrap' }, icon('weekend')),
     h('h2', { id: 'empty-title' }, total ? (waiting ? `${L.mdw(autoDay)} の朝7時に割り振ります` : 'まもなく割り振ります') : 'まずは行きたい所をストック'),
     h('p', {}, total
-      ? (cands.length ? `ストックの${cands.length}件から、天気・期限・行きたい人の数を見て、${wk.days.length}日間に入れます。待たずに決めることもできます。` : 'ストックはありますが、この週末に行けるもの（期間・定休日が合うもの）がありません。')
+      ? (cands.length ? `ストックの${cands.length}件から、天気と住所を見て${wk.days.length}日間に入れます。雨の日は屋内へ、近い場所どうしは同じ日にまとめます。待たずに決めることもできます。` : 'ストックはありますが、この週末に行けるもの（期間・定休日が合うもの）がありません。')
       : 'Instagram・Threads・X・TikTok で見つけたお店やイベントのリンクを追加すると、日付や場所を読み取ってストックします。毎週木曜の朝7時に、今週末の予定へ自動で割り振ります。'),
     cands.length
       ? h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'plan-now', 'data-key': 'plan-now' }, '今すぐ割り振る')
