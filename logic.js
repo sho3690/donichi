@@ -527,7 +527,9 @@ export function applyEvent(state, ev, { today } = {}) {
       if (!it) break;
       const src = sanitizeSource(ev.source);
       if (!src || !(src.text || src.title)) break;
-      it.source = src; it.fetch = { state: 'ok', tries: 0, nextAt: 0, error: '' }; it.ai = null; it.aiTries = 0;
+      // 題名だけ（YouTube の oEmbed など）のときは、説明欄を取りにいけるよう「取得待ち」のままにする
+      const more = !src.text && it.platform === 'youtube' && it.fetch?.state === 'pending';
+      it.source = src; it.fetch = more ? { ...it.fetch } : { state: 'ok', tries: 0, nextAt: 0, error: '' }; it.ai = null; it.aiTries = 0;
       refreshAuto(it, today); it.updatedAt = at;
       break;
     }

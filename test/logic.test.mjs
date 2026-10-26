@@ -283,3 +283,17 @@ test('「1日」枠の入れ替えは何でも入り、時間帯が変わる', (
   assert.equal(next.slots[0].itemId, 'CAFE');
   assert.equal(next.slots[0].slot, 'pm');
 });
+
+test('item.source: YouTube の題名だけなら説明欄を取りにいけるよう取得待ちのまま、本文があれば取得済み', () => {
+  const st = emptyState();
+  const add = (id, url) => applyEvent(st, { id: `a-${id}`, t: 'item.add', by: 'a', at: 1, item: { id, url } }, { today: '2026-10-26' });
+  add('yt', 'https://youtu.be/jNQXAC9IVRw');
+  add('x', 'https://x.com/jack/status/20');
+  applyEvent(st, { id: 's1', t: 'item.source', at: 2, itemId: 'yt', source: { title: 'Me at the zoo', text: '', via: 'youtube-oembed' } }, { today: '2026-10-26' });
+  assert.equal(st.items.yt.fetch.state, 'pending');
+  assert.equal(st.items.yt.auto.title, 'Me at the zoo');
+  applyEvent(st, { id: 's2', t: 'item.source', at: 3, itemId: 'x', source: { text: 'just setting up my twttr', via: 'x-oembed' } }, { today: '2026-10-26' });
+  assert.equal(st.items.x.fetch.state, 'ok');
+  applyEvent(st, { id: 's3', t: 'item.source', at: 4, itemId: 'yt', source: { text: '11/1 開催 代々木公園', via: 'paste' } }, { today: '2026-10-26' });
+  assert.equal(st.items.yt.fetch.state, 'ok');
+});

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInstagram, parseThreads, parseGeneric, parseXOembed, parseYouTube, jsonStringAt, jsonLdLines } from '../sources.js';
+import { parseInstagram, parseThreads, parseGeneric, parseXOembed, parseYouTube, parseYouTubeApi, jsonStringAt, jsonLdLines } from '../sources.js';
 import { extractInfo } from '../logic.js';
 
 test('Instagram: og:title から本文と名前', () => {
@@ -106,4 +106,14 @@ test('JSON-LD: 巨大・大量・入れ子が深くても固まらない', () =>
   const t0 = Date.now();
   assert.deepEqual(jsonLdLines(html), []);
   assert.ok(Date.now() - t0 < 1000, '1秒以内');
+});
+
+test('YouTube Data API の答え: 題名・説明欄の全文・チャンネル名・サムネイル', () => {
+  const j = { items: [{ snippet: { title: 'Weekend Market', description: '11月1日(土) 開催\n会場: 代々木公園', channelTitle: 'マルシェ実行委員会',
+    thumbnails: { default: { url: 'https://i.ytimg.com/vi/x/default.jpg' }, high: { url: 'https://i.ytimg.com/vi/x/hqdefault.jpg' } },
+    localized: { title: '週末マルシェ', description: '11月1日(土) 開催\n会場: 代々木公園' } } }] };
+  assert.deepEqual(parseYouTubeApi(j), { author: 'マルシェ実行委員会', title: '週末マルシェ', text: '11月1日(土) 開催\n会場: 代々木公園', thumb: 'https://i.ytimg.com/vi/x/hqdefault.jpg', via: 'youtube-api' });
+  assert.equal(parseYouTubeApi({ items: [] }), null, '見つからない動画');
+  assert.equal(parseYouTubeApi({ error: { code: 403 } }), null);
+  assert.equal(parseYouTubeApi(null), null);
 });

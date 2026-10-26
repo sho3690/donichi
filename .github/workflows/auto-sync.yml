@@ -49,6 +49,7 @@ jobs:
         env:
           DONICHI_KEY: ${{ secrets.DONICHI_KEY }}
           AI_KEY: ${{ secrets.AI_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}   # 任意。あれば YouTube の説明欄を公式 API で取る
         run: node scripts/sync.mjs
       - name: 保存する
         env:

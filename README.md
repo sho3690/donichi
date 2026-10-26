@@ -68,6 +68,16 @@ gh secret set CLAUDE_CODE_OAUTH_TOKEN -R sho3690/donichi < ~/.config/claude-head
 
 登録後は 15 分ごとの同期で、まだ読み取っていないものから順に Claude（道具なし・本文はデータとして扱う）が読み取ります。
 
+## YouTube の説明欄を読む（任意）
+
+GitHub のサーバーから YouTube の動画ページを開くと確認用のページが返るため、鍵が無いと題名しか取れません。
+YouTube Data API v3 の API キー（無料・1日1万回まで。1本の読み取りで1回）を Secrets の `YOUTUBE_API_KEY` に登録すると、
+説明欄の全文・チャンネル名・サムネイルを公式の窓口から取ります。鍵は同期の手順にだけ渡し、URL ではなくヘッダーで送ります。
+
+```
+gh secret set YOUTUBE_API_KEY -R sho3690/donichi      # 実行すると貼り付けを求められる
+```
+
 ## 合言葉を変える（招待リンクが広まりすぎたとき）
 
 ```

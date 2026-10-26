@@ -5,7 +5,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { clientFetchers, parseInstagram, parseThreads, parseGeneric, parseYouTube } from '../sources.js';
+import { clientFetchers, parseInstagram, parseThreads, parseGeneric, parseYouTube, parseYouTubeApi } from '../sources.js';
 import { parseUrl } from '../logic.js';
 
 // 名乗りは正直に（他社のクローラーやブラウザのふりをしない）。断られたら、画面でキャプションを貼ってもらう
@@ -108,6 +108,22 @@ async function followTo(url, done, timeout = 15000) {
   } finally { clearTimeout(t); }
 }
 
+// YouTube の公式 API（鍵 YOUTUBE_API_KEY が Secrets にあるときだけ）。
+// クラウドから動画ページを開くと確認用のページが返り説明欄が読めないため、説明欄はこれで取る。
+// 鍵は URL に入れずヘッダーで渡す（エラー文やログに鍵が混ざらない）
+async function youtubeApi(videoId) {
+  const key = process.env.YOUTUBE_API_KEY?.trim();
+  if (!key || !/^[\w-]{11}$/.test(videoId)) return null;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10000);
+  try {
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&hl=ja&id=${videoId}`,
+      { headers: { 'X-Goog-Api-Key': key, 'User-Agent': UA }, signal: ctl.signal });
+    if (!res.ok) throw new Error(`YouTube API ${res.status}`);
+    return parseYouTubeApi(await res.json());
+  } finally { clearTimeout(t); }
+}
+
 const isTikTokPost = u => { const p = parseUrl(u); return p?.platform === 'tiktok' && /\/(video|photo)\/\d+/.test(p.canonical); };
 
 const serverFetchers = {
@@ -141,6 +157,10 @@ const serverFetchers = {
   },
   x: item => clientFetchers.x(item),
   async youtube(item) {
+    try {
+      const api = await youtubeApi(new URL(item.canonical).searchParams.get('v') || '');
+      if (api) return api;
+    } catch { /* 下の方法へ */ }
     const base = await clientFetchers.youtube(item).catch(() => null);
     try {
       const { html } = await getHtml(item.canonical, UA);

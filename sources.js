@@ -155,6 +155,19 @@ export function parseYouTube(html) {
   return { author: jsonStringAt(html, 'ownerChannelName', 200), text, title, thumb: meta['og:image'] || '', via: 'youtube' };
 }
 
+// YouTube Data API v3（videos.list, part=snippet）の答え。題名・説明欄の全文・チャンネル名・サムネイル
+export function parseYouTubeApi(j) {
+  const sn = Array.isArray(j?.items) ? j.items[0]?.snippet : null;
+  if (!sn || typeof sn !== 'object') return null;
+  const loc = sn.localized && typeof sn.localized === 'object' ? sn.localized : {};
+  const title = String(loc.title || sn.title || '');
+  const text = String(loc.description || sn.description || '');
+  if (!title && !text) return null;
+  const th = sn.thumbnails || {};
+  const thumb = String((th.high || th.medium || th.default || {}).url || '');
+  return { author: String(sn.channelTitle || ''), title, text, thumb, via: 'youtube-api' };
+}
+
 // お店・イベントのサイトが埋め込んでいる構造化データ（schema.org の JSON-LD）を、読み取りやすい行にする
 const LD_MAX_BLOCKS = 6;
 const LD_MAX_CHARS = 100000;
