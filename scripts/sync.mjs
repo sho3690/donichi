@@ -46,7 +46,16 @@ async function main() {
   let got = 0, missed = 0;
   for (const item of due) {
     try {
-      const src = sanitizeSource(await fetchOnServer(item));
+      const raw = await fetchOnServer(item);
+      if (raw?.resolved) { item.url = raw.resolved.url; item.canonical = raw.resolved.canonical; }   // 短縮リンクの行き先
+      const src = sanitizeSource(raw);
+      if (raw?.giveUp && !(src?.text || src?.title)) {   // やり直しても読めないもの（TikTok）。名前だけ付けて、貼ってもらう
+        item.source = src;
+        item.fetch = { state: 'failed', tries: (item.fetch.tries || 0) + 1, nextAt: 0, error: raw.giveUp };
+        refreshAuto(item, today);
+        missed++;
+        continue;
+      }
       if (!src || !(src.text || src.title)) throw new Error('本文が見つかりません');
       item.source = src;
       item.fetch = { state: 'ok', tries: (item.fetch.tries || 0) + 1, nextAt: 0, error: '' };

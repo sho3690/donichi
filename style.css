@@ -377,6 +377,10 @@ details.raw summary { cursor: pointer; min-height: 44px; display: flex; align-it
 .inline-alert { margin-top: 1rem; padding: .75rem 1rem; border-radius: var(--r-md); background: var(--warning-muted); border-left: 4px solid var(--warning); font-size: .875rem; line-height: 1.6; }
 .inline-alert.info { background: var(--surface-blue); border-left-color: var(--accent); }
 .inline-alert .btn { margin-top: .5rem; }
+.caption-form { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
+.caption-form .field { margin-bottom: 0; }
+.caption-form .actions-row { margin-top: .75rem; justify-content: flex-end; }
+.help.note { color: var(--text-2); background: var(--surface-blue); border-radius: var(--r-sm); padding: .5rem .75rem; }
 
 .pick { display: grid; gap: .5rem; list-style: none; margin: 0; padding: 0; }
 .pick button { width: 100%; display: block; text-align: left; padding: .875rem 1rem; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); cursor: pointer; }

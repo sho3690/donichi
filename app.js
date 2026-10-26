@@ -380,7 +380,7 @@ function render() {
   const parts = app.view === 'stock' ? viewStock(st) : app.view === 'done' ? viewDone(st) : viewWeekend(st);
   view.replaceChildren(...parts);
   if (focusKey) view.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
-  if (app.sheet && (app.sheet.kind === 'detail' || app.sheet.kind === 'pick')) renderSheet();   // 入力中のシートは書き換えない
+  if (app.sheet && (app.sheet.kind === 'detail' || app.sheet.kind === 'pick') && !app.sheet.draft) renderSheet();   // 入力中のシートは書き換えない
 }
 
 function renderBadge() {
@@ -549,7 +549,8 @@ function thumb(item, info = L.effectiveInfo(item)) {
 
 function itemCard(item, today) {
   const info = L.effectiveInfo(item);
-  const waiting = item.fetch?.state === 'pending' && !item.source && !item.note;
+  const needCaption = item.platform === 'tiktok' && !item.source?.text && !item.note;   // TikTok は待っても読めない
+  const waiting = item.fetch?.state === 'pending' && !item.source && !item.note && !needCaption;
   const left = L.daysUntilEnd(info, today);
   const dl = L.dateLabel(info, today);
   const meta = [info.area, info.category !== 'other' && L.CATEGORIES[info.category].label].filter(Boolean);
@@ -563,7 +564,8 @@ function itemCard(item, today) {
       h('span', { class: 'item-foot' },
         h('span', { class: 'src' }, L.PLATFORM_LABEL[item.platform]),
         waiting && h('span', { class: 'tag-wait' }, '情報を集めています'),
-        item.fetch?.state === 'failed' && !item.note && h('span', { class: 'tag-fail' }, '自動で読み取れませんでした'),
+        needCaption ? h('span', { class: 'tag-fail' }, 'キャプション待ち')
+          : item.fetch?.state === 'failed' && !item.note && !item.source?.text && h('span', { class: 'tag-fail' }, '自動で読み取れませんでした'),
         avatars(item.by))));
 }
 
@@ -631,6 +633,9 @@ function sheetAdd(s) {
   const err = h('p', { class: 'err', id: 'add-err', hidden: true });
   const url = h('textarea', { class: 'textarea', id: 'add-url', rows: '2', inputmode: 'url', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false', placeholder: 'https://www.instagram.com/p/…', 'aria-describedby': 'add-url-help add-err', autofocus: true });
   url.value = s.url || '';
+  const ttHint = h('p', { class: 'help note', id: 'add-tt', 'aria-live': 'polite', hidden: !/tiktok\.com/i.test(url.value) },
+    'TikTok は投稿の本文を自動で読めません。キャプションをコピーできたら、下のメモに一緒に貼ってください。');
+  url.addEventListener('input', () => { ttHint.hidden = !/tiktok\.com/i.test(url.value); });
   const note = h('textarea', { class: 'textarea', id: 'add-note', rows: '4', 'aria-describedby': 'add-note-help' });
   note.value = s.note || '';
   const canPaste = !!navigator.clipboard?.readText;
@@ -638,10 +643,11 @@ function sheetAdd(s) {
     h('div', { class: 'field' },
       h('label', { for: 'add-url' }, 'リンク'),
       h('div', { class: 'with-btn' }, url, canPaste && h('button', { class: 'btn btn-secondary', type: 'button', onclick: async () => {
-        try { const t = await navigator.clipboard.readText(); if (t) { url.value = [url.value.trim(), t.trim()].filter(Boolean).join('\n'); url.focus(); } }
+        try { const t = await navigator.clipboard.readText(); if (t) { url.value = [url.value.trim(), t.trim()].filter(Boolean).join('\n'); url.dispatchEvent(new Event('input')); url.focus(); } }
         catch { err.hidden = false; err.textContent = '貼り付けできませんでした。入力欄を長押しして貼り付けてください。'; }
       } }, icon('paste'), '貼り付け')),
       h('p', { class: 'help', id: 'add-url-help' }, 'Instagram・Threads・X・TikTok・YouTube、お店のサイトなど。改行で区切れば、まとめて追加できます。'),
+      ttHint,
       err),
     h('div', { class: 'field' },
       h('label', { for: 'add-note' }, 'メモ', h('span', { class: 'opt' }, '任意')),
@@ -703,11 +709,17 @@ function sheetDetail(s) {
   ].filter(([, v]) => v);
   const url = safeUrl(item.url);
   const mine = item.by.includes(app.name);
+  const tiktok = item.platform === 'tiktok';
+  const noText = !item.source?.text && item.platform !== 'memo';
   const waiting = item.fetch?.state === 'pending' && item.platform !== 'memo';
+  const failed = item.fetch?.state === 'failed' && noText;
   const body = h('div', { class: 'sheet-body' },
-    waiting && h('div', { class: 'inline-alert info', role: 'status' }, '投稿の本文を取りに行っています。15分ほどで日付や場所がまとまります。待たずに、キャプションを「情報を直す」のメモに貼ることもできます。'),
-    item.fetch?.state === 'failed' && h('div', { class: 'inline-alert' }, '投稿を自動で読み取れませんでした（非公開の投稿や、相手側の制限のことがあります）。キャプションを「情報を直す」のメモに貼ると、日付や場所を読み取ります。',
+    waiting && !tiktok && h('div', { class: 'inline-alert info', role: 'status' }, '投稿の本文を取りに行っています。15分ほどで日付や場所がまとまります。待たずに、下にキャプションを貼ることもできます。'),
+    noText && tiktok && (waiting || failed) && h('div', { class: 'inline-alert info', role: 'status' }, 'TikTok は投稿の本文（キャプション）を外から読めない仕組みです。TikTok で投稿を開いて説明文をコピーできたら、下に貼ってください。コピーできないときは、店名や日付など分かることを書くだけでも読み取ります。',
+      url && h('div', {}, h('a', { class: 'btn btn-secondary btn-sm', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'TikTok で投稿を開く', icon('out')))),
+    failed && !tiktok && h('div', { class: 'inline-alert' }, '投稿を自動で読み取れませんでした（非公開の投稿や、相手側の制限のことがあります）。キャプションを下に貼ると、日付や場所を読み取ります。',
       h('div', {}, h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'refetch', 'data-id': item.id }, icon('refresh'), 'もう一度取りに行く'))),
+    noText && (waiting || failed) && captionBox(s, item),
     info.summary && h('div', { class: 'summary-box' }, h('span', { class: 'label' }, 'かんたんに言うと'), info.summary),
     facts.length && h('dl', { class: 'facts' }, facts.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     url && h('a', { class: 'src-link', href: url, target: '_blank', rel: 'noopener noreferrer' }, `${L.PLATFORM_LABEL[item.platform]}で元の投稿を開く`, icon('out')),
@@ -725,6 +737,34 @@ function sheetDetail(s) {
   return [sheetHead(info.title, kicker), body, h('div', { class: 'sheet-foot' }, foot)];
 }
 const clipNote = s => (s.length > 200 ? `${s.slice(0, 200)}…` : s);
+
+// 読めなかった投稿の本文を、その場で貼ってもらう（貼った文は「投稿の本文」として読み取る）
+function captionBox(s, item) {
+  const err = h('p', { class: 'err', id: 'cap-err', hidden: true });
+  const ta = h('textarea', { class: 'textarea', id: 'cap-text', rows: '4', maxlength: '2500', 'aria-describedby': 'cap-help cap-err',
+    oninput: e => { s.draft = e.target.value; } });
+  ta.value = s.draft || '';
+  const canPaste = !!navigator.clipboard?.readText;
+  return h('form', { class: 'caption-form', novalidate: true, onsubmit: e => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) { err.hidden = false; err.textContent = 'キャプションか、分かることを入れてください。'; ta.setAttribute('aria-invalid', 'true'); ta.focus(); return; }
+    s.draft = '';
+    send('item.source', { itemId: item.id, source: { author: item.source?.author || '', title: '', text, thumb: item.source?.thumb || '', via: 'paste' } });
+    toast('貼った文から読み取りました');
+  } },
+    h('div', { class: 'field' },
+      h('label', { for: 'cap-text' }, 'キャプション（投稿の説明文）'),
+      ta,
+      h('p', { class: 'help', id: 'cap-help' }, '日付・場所・営業時間などを読み取って、上の情報にまとめます。'),
+      err),
+    h('div', { class: 'actions-row' },
+      canPaste && h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: async () => {
+        try { const t = await navigator.clipboard.readText(); if (t) { ta.value = t.trim().slice(0, 2500); s.draft = ta.value; ta.focus(); } }
+        catch { err.hidden = false; err.textContent = '貼り付けできませんでした。入力欄を長押しして貼り付けてください。'; }
+      } }, icon('paste'), '貼り付け'),
+      h('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, '読み取る')));
+}
 
 // ---- 情報を直す ----
 function sheetEdit(s) {

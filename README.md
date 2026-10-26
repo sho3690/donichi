@@ -42,7 +42,11 @@ Instagram・Threads・X・TikTok などで見つけた「行きたい所」の�
   定時実行は途切れたときの予備（1時間ごと）です。
   止めるとき: `gh workflow disable auto-sync.yml -R sho3690/donichi`
   / 再開するとき: `gh workflow enable auto-sync.yml -R sho3690/donichi && gh workflow run auto-sync.yml -R sho3690/donichi`
-- TikTok / X / YouTube は、追加したその場でブラウザから本文を取ります（公式の oEmbed。X は予備に fxtwitter）。
+- X / YouTube は、追加したその場でブラウザから本文を取ります（公式の oEmbed。X は予備に fxtwitter）。
+- Instagram・Threads・YouTube の説明欄（全文）・お店やイベントのサイト（埋め込みの schema.org 情報＝開催日・会場・住所・料金も）は Actions が読みます。
+  名乗りは正直に `DONICHI/1.0` とし、他社のクローラーやブラウザのふりはしません。断られたものは画面で「キャプションを貼る」に回します。
+- **TikTok は本文を外から読めません**（2026年に公式の oEmbed が題名を返さなくなり、ページは自動アクセスよけの仕組みで中身を出すため）。
+  短縮リンクの行き先と投稿者の名前だけ取り、詳細画面の「キャプション（投稿の説明文）」欄に貼ってもらうと、その場で日付や場所を読み取ります。
 
 ## 割り振りのルール（logic.js の planWeekend）
 

@@ -5,11 +5,12 @@ import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { clientFetchers, parseInstagram, parseThreads, parseGeneric } from '../sources.js';
+import { clientFetchers, parseInstagram, parseThreads, parseGeneric, parseYouTube } from '../sources.js';
 import { parseUrl } from '../logic.js';
 
-const CRAWLER_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
-const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+// 名乗りは正直に（他社のクローラーやブラウザのふりをしない）。断られたら、画面でキャプションを貼ってもらう
+const UA = 'DONICHI/1.0 (+https://sho3690.github.io/donichi/)';
+export const TIKTOK_NO_TEXT = 'TikTok は投稿の本文を外から読めません';
 const MAX_BYTES = 1_500_000;
 const MAX_HOPS = 5;
 
@@ -89,43 +90,67 @@ async function getHtml(url, ua, timeout = 15000) {
   } finally { clearTimeout(t); }
 }
 
+// 転送をたどって、行き先が done(url) を満たした時点で止める（行き先のページ本体は読まない）
+async function followTo(url, done, timeout = 15000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    let current = url;
+    for (let hop = 0; hop <= MAX_HOPS; hop++) {
+      if (done(current)) return current;
+      if (!shapeOk(current)) throw new Error('blocked target');
+      const res = await request(current, UA, ctl.signal);
+      res.resume();
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { current = new URL(res.headers.location, current).href; continue; }
+      return current;
+    }
+    throw new Error('too many redirects');
+  } finally { clearTimeout(t); }
+}
+
+const isTikTokPost = u => { const p = parseUrl(u); return p?.platform === 'tiktok' && /\/(video|photo)\/\d+/.test(p.canonical); };
+
 const serverFetchers = {
   async instagram(item) {
     const code = item.canonical.match(/\/p\/([^/]+)/)?.[1];
-    const tries = [
-      [item.canonical, CRAWLER_UA],
-      code && [`https://www.instagram.com/p/${code}/embed/captioned/`, MOBILE_UA],
-    ].filter(Boolean);
-    for (const [url, ua] of tries) {
-      try { const { html } = await getHtml(url, ua); const r = parseInstagram(html); if (r) return r; } catch { /* 次へ */ }
+    const tries = [item.canonical, code && `https://www.instagram.com/p/${code}/embed/captioned/`].filter(Boolean);
+    for (const url of tries) {
+      try { const { html } = await getHtml(url, UA); const r = parseInstagram(html); if (r) return r; } catch { /* 次へ */ }
     }
     return null;
   },
   async threads(item) {
-    const { html } = await getHtml(item.canonical, CRAWLER_UA);
+    const { html } = await getHtml(item.canonical, UA);
     return parseThreads(html);
   },
+  // TikTok は本文を外から読めない（oEmbed が題名を返さず、ページは自動アクセスよけの仕組みで中身を出す）。
+  // 短縮リンクの行き先と投稿者の名前（URL の @…）だけ取り、本文はすぐに「貼ってください」に回す
   async tiktok(item) {
     let target = item;
-    if (item.short || !/\/(video|photo)\/\d+/.test(item.canonical)) {   // 短縮リンクは行き先を確かめる
-      const { finalUrl } = await getHtml(item.url || item.canonical, MOBILE_UA);
-      const p = parseUrl(finalUrl);
-      if (p) target = { ...item, ...p };
+    if (!isTikTokPost(item.canonical)) {
+      try {
+        const to = await followTo(item.url || item.canonical, isTikTokPost);
+        if (isTikTokPost(to)) { const p = parseUrl(to); target = { ...item, url: p.url, canonical: p.canonical }; }
+      } catch { /* 行き先が分からなくても、貼ってもらえば読める */ }
     }
-    return clientFetchers.tiktok(target);
+    const resolved = target !== item ? { url: target.url, canonical: target.canonical } : null;
+    const got = await clientFetchers.tiktok(target).catch(() => null);
+    if (got?.text) return { ...got, resolved };
+    const handle = target.canonical.match(/tiktok\.com\/(@[^/]+)\//)?.[1] || '';
+    return { author: got?.author || handle, text: '', title: '', thumb: got?.thumb || '', via: 'tiktok-link', resolved, giveUp: TIKTOK_NO_TEXT };
   },
   x: item => clientFetchers.x(item),
   async youtube(item) {
-    const base = await clientFetchers.youtube(item);
+    const base = await clientFetchers.youtube(item).catch(() => null);
     try {
-      const { html } = await getHtml(item.canonical, CRAWLER_UA);
-      const g = parseGeneric(html);
-      if (g?.text && base) base.text = g.text;
+      const { html } = await getHtml(item.canonical, UA);
+      const y = parseYouTube(html);
+      if (y) return { ...y, author: base?.author || y.author, title: base?.title || y.title, thumb: base?.thumb || y.thumb };
     } catch { /* 題名だけでも十分 */ }
     return base;
   },
   async web(item) {
-    const { html } = await getHtml(item.canonical, CRAWLER_UA);
+    const { html } = await getHtml(item.canonical, UA);
     return parseGeneric(html);
   },
 };

@@ -1,6 +1,7 @@
 // 投稿の本文（キャプション・説明欄）を取ってくる。
-// TikTok / X / YouTube は公開の窓口（oEmbed）がブラウザから使えるので、追加したその場で取る。
-// Instagram / Threads はブラウザからは取れないため、GitHub Actions（scripts/sources-server.mjs）が取る。
+// X / YouTube は公開の窓口（oEmbed）がブラウザから使えるので、追加したその場で取る。
+// TikTok の oEmbed は 2026年に題名（本文）を返さなくなった。戻ったときのために試すだけ試す。
+// Instagram / Threads / YouTube の説明欄 / 一般のサイトは、GitHub Actions（scripts/sources-server.mjs）が取る。
 
 import { htmlToText, decodeEntities } from './logic.js';
 
@@ -59,7 +60,7 @@ export const clientFetchers = {
 };
 
 export async function fetchInBrowser(item) {
-  const f = clientFetchers[item.platform];
+  const f = item.platform === 'tiktok' ? null : clientFetchers[item.platform];   // TikTok はブラウザからは何も取れない（サーバーで行き先と名前だけ取る）
   if (!f) return null;
   try { return await f(item); } catch { return null; }
 }
@@ -84,16 +85,17 @@ export function metaTags(html) {
   return out;
 }
 
-// Instagram: og:title は「名前 on Instagram: "本文"」、og:description は「n likes, n comments - user on 日付: "本文".」
+// Instagram: og:title は「名前 - Instagram: "本文"」（以前は「名前 on Instagram: "本文"」）、
+// og:description は「日付、n likes, n comments - user: "本文".」（以前は「… - user on 日付: "本文".」）
 export function parseInstagram(html) {
   const meta = metaTags(html);
   let text = '', author = '';
   const t = meta['og:title'] || '';
-  let m = t.match(/^(.*?) on Instagram: ["“]([\s\S]*)["”]\s*$/);
+  let m = t.match(/^(.*?)\s+(?:on|-|–)\s+Instagram\s*[:：]\s*["“]([\s\S]*)["”]\s*$/);
   if (m) { author = m[1].trim(); text = m[2]; }
   if (!text) {
     const d = meta['og:description'] || meta.description || '';
-    m = d.match(/^[\s\S]*? - ([^\s]+) on [^:]+: ["“]([\s\S]*)["”]\.?\s*$/) || d.match(/^[\s\S]*?: ["“]([\s\S]*)["”]\.?\s*$/);
+    m = d.match(/^[\s\S]*? - (\S+?)(?: on [^:：]+)?\s*[:：]\s*["“]([\s\S]*)["”]\.?\s*$/) || d.match(/^[\s\S]*?[:：]\s*["“]([\s\S]*)["”]\.?\s*$/);
     if (m) { if (m.length === 3) { author = author || m[1]; text = m[2]; } else text = m[1]; }
   }
   if (!text) {   // 埋め込みページ（/embed/captioned/）の本文
@@ -116,20 +118,113 @@ export function parseInstagram(html) {
   return { author, text: text.trim(), title: '', thumb: meta['og:image'] || '', via: 'instagram' };
 }
 
-// Threads: og:description が本文、og:title は「名前 (@user) on Threads」
+// Threads: og:description が本文、og:title は「名前 (@user) on Threads」（日本語のページでは「Threadsの名前 (@user)」）
 export function parseThreads(html) {
   const meta = metaTags(html);
   const text = meta['og:description'] || '';
   if (!text) return null;
-  const author = (meta['og:title'] || '').replace(/\s*on Threads\s*$/, '').trim();
+  const author = (meta['og:title'] || '').replace(/^Threads\s*の\s*/, '').replace(/\s*on Threads\s*$/, '').trim();
   return { author, text, title: '', thumb: meta['og:image'] || '', via: 'threads' };
+}
+
+// ページに埋め込まれた JSON の文字列 "key":"…" を1つ取り出す（前から順に読むだけ。長さに比例した時間で終わる）
+export function jsonStringAt(html, key, max = 20000) {
+  const s = String(html);
+  const at = s.indexOf(`"${key}":"`);
+  if (at < 0) return '';
+  const start = at + key.length + 4;
+  let i = start;
+  for (; i < s.length && i - start < max; i++) {
+    if (s[i] === '\\') { i++; continue; }
+    if (s[i] === '"') break;
+  }
+  if (s[i] !== '"') return '';
+  try { return JSON.parse(`"${s.slice(start, i)}"`); } catch { return ''; }
+}
+
+// YouTube: og:description は途中で切れているので、ページの中の説明欄の全文（shortDescription）を使う
+export function parseYouTube(html) {
+  const meta = metaTags(html);
+  const title = meta['og:title'] || meta['twitter:title'] || '';
+  const text = jsonStringAt(html, 'shortDescription') || meta['og:description'] || meta.description || '';
+  if (!title && !text) return null;
+  return { author: jsonStringAt(html, 'ownerChannelName', 200), text, title, thumb: meta['og:image'] || '', via: 'youtube' };
+}
+
+// お店・イベントのサイトが埋め込んでいる構造化データ（schema.org の JSON-LD）を、読み取りやすい行にする
+const LD_MAX_BLOCKS = 6;
+const LD_MAX_CHARS = 100000;
+function* ldNodes(v, depth = 0) {
+  if (!v || typeof v !== 'object' || depth > 6) return;
+  if (Array.isArray(v)) { for (const x of v.slice(0, 50)) yield* ldNodes(x, depth + 1); return; }
+  yield v;
+  if (v['@graph']) yield* ldNodes(v['@graph'], depth + 1);
+}
+const ldText = v => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '').replace(/\s+/g, ' ').trim().slice(0, 200);
+const ldTypes = n => [].concat(n['@type'] || []).filter(t => typeof t === 'string');
+const ldDate = v => { const m = ldText(v).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[1]}-${m[2]}-${m[3]}` : ''; };
+function ldAddress(a) {
+  if (typeof a === 'string') return ldText(a);
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return '';
+  return [a.postalCode && `〒${ldText(a.postalCode).replace(/^〒/, '')}`, a.addressRegion, a.addressLocality, a.streetAddress].map(ldText).filter(Boolean).join(' ');
+}
+function ldPrice(n) {
+  if (n.isAccessibleForFree === true) return '無料';
+  const o = [].concat(n.offers || [])[0];
+  if (o && typeof o === 'object') {
+    const p = ldText(o.price ?? o.lowPrice);
+    if (p === '0') return '無料';
+    if (p) return /JPY/i.test(ldText(o.priceCurrency)) || !o.priceCurrency ? `${p}円` : `${p} ${ldText(o.priceCurrency)}`;
+  }
+  return ldText(n.priceRange);
+}
+export function jsonLdLines(html) {
+  const s = String(html), lower = s.toLowerCase();
+  const lines = [];
+  for (let pos = 0, blocks = 0; blocks < LD_MAX_BLOCKS; blocks++) {
+    const at = lower.indexOf('application/ld+json', pos);
+    if (at < 0) break;
+    const st = lower.lastIndexOf('<script', at);
+    const b = st >= 0 ? between(s, lower, st, '<script', '</script>', LD_MAX_CHARS) : null;
+    pos = b ? b.end : at + 19;
+    if (!b) continue;
+    let data;
+    try { data = JSON.parse(b.inner); } catch { continue; }
+    for (const n of ldNodes(data)) {
+      const types = ldTypes(n);
+      const isEvent = types.some(t => /Event$/.test(t) || t === 'Festival');
+      const isPlace = types.some(t => /(LocalBusiness|Restaurant|Shop|Store|Bakery|BarOrPub|Museum|Attraction|Park|Place|Establishment|Center|Zoo|Aquarium|Gallery|Hotel|Venue)$/.test(t));
+      if (!isEvent && !isPlace) continue;
+      const name = ldText(n.name);
+      if (isEvent) {
+        const a = ldDate(n.startDate), z = ldDate(n.endDate);
+        if (name) lines.push(`イベント: ${name}`);
+        if (a) lines.push(z && z !== a ? `開催期間: ${a}〜${z}` : `開催日: ${a}`);
+        const loc = [].concat(n.location || [])[0];
+        if (loc && typeof loc === 'object') {
+          if (ldText(loc.name)) lines.push(`会場: ${ldText(loc.name)}`);
+          if (ldAddress(loc.address)) lines.push(`住所: ${ldAddress(loc.address)}`);
+        } else if (ldText(loc)) lines.push(`会場: ${ldText(loc)}`);
+      } else {
+        if (name) lines.push(`店名: ${name}`);
+        if (ldAddress(n.address)) lines.push(`住所: ${ldAddress(n.address)}`);
+        const oh = [].concat(n.openingHours || []).map(ldText).filter(Boolean).join(' / ');
+        if (oh) lines.push(`営業時間: ${oh}`);
+      }
+      const price = ldPrice(n);
+      if (price) lines.push(`料金: ${price}`);
+      if (lines.length >= 24) return [...new Set(lines)];
+    }
+  }
+  return [...new Set(lines)];
 }
 
 export function parseGeneric(html) {
   const meta = metaTags(html);
   const tt = between(String(html), String(html).toLowerCase(), 0, '<title', '</title>', 2000);
   const title = meta['og:title'] || meta['twitter:title'] || (tt ? tt.inner : '');
-  const text = meta['og:description'] || meta['twitter:description'] || meta.description || '';
+  const desc = decodeEntities(meta['og:description'] || meta['twitter:description'] || meta.description || '');
+  const text = [...jsonLdLines(html), desc].filter(Boolean).join('\n');
   if (!title && !text) return null;
-  return { author: meta['og:site_name'] || '', text: decodeEntities(text), title: decodeEntities(title).trim(), thumb: meta['og:image'] || '', via: 'web' };
+  return { author: meta['og:site_name'] || '', text, title: decodeEntities(title).trim(), thumb: meta['og:image'] || '', via: 'web' };
 }
