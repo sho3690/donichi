@@ -11,7 +11,7 @@ import { open, seal, keysFrom, b64u } from '../crypto.js';
 import {
   applyEvent, jstToday, weekendFor, autoPlanDay, planWeekend, maintain, refreshAuto,
   parseWeather, weatherUrl, sanitizePlan, sanitizeSource, candidates, clip,
-  effectiveInfo, geoKey, imageQueries, lookupName, CITIES, has,
+  effectiveInfo, geoKey, imageQueries, lookupName, CITIES, has, AUTO_VERSION,
 } from '../logic.js';
 import { fetchOnServer, locate } from './sources-server.mjs';
 import { loadKeys, loadState, saveState } from './state-io.mjs';
@@ -70,6 +70,14 @@ async function main() {
     }
   }
   if (due.length) say(`本文: ${due.length}件を取得 → 成功${got}件・失敗${missed}件`);
+
+  // 2.4) 読み取りのルールを直したときは、保存済みのものを一度だけ読み取り直す
+  let reread = 0;
+  for (const item of Object.values(state.items)) {
+    if ((item.autoV || 1) >= AUTO_VERSION) continue;
+    refreshAuto(item, today); reread++;
+  }
+  if (reread) say(`読み取り直し: ${reread}件`);
 
   // 2.5) 位置と写真（割り振りで近い場所をまとめる・ストックに必ず絵を出すため）。手がかりが変わったものだけ、1回に8件まで
   const home = has(CITIES, state.settings.city) ? CITIES[state.settings.city] : CITIES.tokyo;

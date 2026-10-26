@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   jstToday, jpHolidays, weekendFor, autoPlanDay, parseUrl, findUrls, extractDateRanges, extractInfo,
   emptyState, applyEvent, effectiveInfo, planWeekend, swapSlot, rankForSlot, maintain, eligibleOn,
-  distKm, kmLabel, sanitizeLookup, lookupName, imageQueries,
+  distKm, kmLabel, sanitizeLookup, lookupName, imageQueries, AUTO_VERSION,
   sanitizePlan, dateLabel, htmlToText,
 } from '../logic.js';
 
@@ -374,4 +374,28 @@ test('住所調べ: 都道府県から始まらない住所は使わない・名
   assert.equal(lookupName({ title: '@abcの投稿', category: 'cafe' }), '');
   assert.deepEqual(imageQueries({ place: '表参道ヒルズ 大階段前', title: '冬のマルシェ', area: '表参道' }), ['表参道ヒルズ 大階段前', '表参道ヒルズ', '冬のマルシェ', '表参道']);
   assert.deepEqual(imageQueries({ title: 'TikTokの投稿' }), []);
+});
+
+test('住所: 「東京都が選定する…」のような文は住所にしない。Claude が「住所なし」と読んだらルールの値より優先', () => {
+  const T = '2026-10-27';
+  const cap = 'スパニッシュ様式の洋館。\n東京都が選定する歴史的建造物でもあります\n戦後はGHQに接収され…';
+  assert.equal(extractInfo({ text: cap }, T).address, null);
+  for (const [t, a] of [
+    ['📍東京都渋谷区神宮前4-12-10 表参道ヒルズ', '東京都渋谷区神宮前4-12-10'],
+    ['東京都千代田区霞が関1-1-1にあるカフェ', '東京都千代田区霞が関1-1-1'],
+    ['東京都渋谷区のカフェ巡り', '東京都渋谷区'],
+    ['東京都内で一番古い町', null],
+    ['茨城県かすみがうら市上土田461', '茨城県かすみがうら市上土田461'],
+  ]) assert.equal(extractInfo({ text: t }, T).address, a, t);
+  const st = emptyState();
+  applyEvent(st, { id: 'a1', t: 'item.add', by: 'a', at: 1, item: { id: 'Q', note: 'x' } }, { today: T });
+  const it = st.items.Q;
+  it.auto = { ...it.auto, address: '東京都が選定する歴史的建造物でもあります' };
+  it.ai = { title: '小笠原伯爵邸', place: '小笠原伯爵邸', address: null };
+  assert.equal(effectiveInfo(it).address, null, 'Claude の「住所なし」が勝つ');
+  it.lookup = { q: '小笠原伯爵邸', address: '東京都新宿区河田町10-10', area: '若松河田' };
+  assert.equal(effectiveInfo(it).address, '東京都新宿区河田町10-10', '検索で調べた住所で補う');
+  it.edits = { address: '東京都新宿区河田町10-10 小笠原伯爵邸' };
+  assert.equal(effectiveInfo(it).address, '東京都新宿区河田町10-10 小笠原伯爵邸', '手で直したものが最優先');
+  assert.equal(it.autoV, AUTO_VERSION, '読み取りのルールの版を記録');
 });

@@ -199,6 +199,8 @@ const AREA_LIST = ('渋谷,新宿,原宿,表参道,青山,外苑前,銀座,有�
 export const KNOWN_AREAS = AREA_LIST;
 
 const PREF = '(?:東京都|北海道|京都府|大阪府|[\\u4e00-\\u9fff]{2,3}県)';
+const MUNI = '(?:にかほ市|かすみがうら市|[^\\s、。,，「」『』#()（）がはをでにもへ]{1,8}?[市区町村郡])';
+const ADDR_REST = '(?:[\\u4e00-\\u9fff々〆ヵヶケァ-ヴー0-9０-９\\-－‐−]|[のが](?=[\\u4e00-\\u9fff々])){0,30}';
 const RAIL_PREFIX = /^(?:JR|東京メトロ|メトロ|都営(?:地下鉄)?|地下鉄|京王|小田急|東急|西武|東武|京急|京成|相鉄|りんかい線|阪急|阪神|近鉄|南海|名鉄|各線|線)/;
 const WD = { 日: 0, 月: 1, 火: 2, 水: 3, 木: 4, 金: 5, 土: 6 };
 
@@ -314,7 +316,9 @@ export function extractInfo({ text = '', title = '', author = '', note = '', pla
   const nameLab = labelOf(/(?:店名|店舗名|施設名|お店|shop|name)\s*[:：]\s*([^\n]{2,50})/i);
   const venueLab = labelOf(/(?:場所|会場|開催場所|開催地|スポット|place|venue)\s*[:：]\s*([^\n]{2,50})/i);
   const labeled = nameLab || venueLab;
-  const addrM = body.match(new RegExp(`(?:〒?\\d{3}-\\d{4}\\s*)?(${PREF}[^\\s、。「」#()（）]{2,40})`));
+  // 住所は「都道府県のすぐ後に市区町村名」が続くものだけ（「東京都が選定する…」のような文は住所にしない）。
+  // 続きは漢字・カナ・数字・ハイフンと、「霞が関」「自由が丘」のように漢字の前の「の・が」まで
+  const addrM = body.match(new RegExp(`(?:〒?\\d{3}-\\d{4}\\s*)?(${PREF}${MUNI}${ADDR_REST})`));
   const address = addrM ? addrM[1] : null;
   const isAddressish = s => !!s && (new RegExp(`^${PREF}`).test(s) || /\d+-\d+|丁目|番地/.test(s));
 
@@ -428,6 +432,8 @@ export function effectiveInfo(item) {
     for (const [k, v] of Object.entries(src)) if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && k !== 'dates' && k !== 'closedDays' && !v.length)) out[k] = v;
   }
   if (item.edits && Array.isArray(item.edits.dates)) out.dates = item.edits.dates;
+  // Claude が読んで「住所は書かれていない」としたら、ルールが拾った住所は使わない（文を住所と取り違えていることがある）
+  if (item.ai && item.ai.address === null && !item.edits?.address) out.address = null;
   // 投稿に住所が無ければ、施設を検索して見つけた住所で補う（手で直したものが最優先）
   if (!out.address && item.lookup?.address) out.address = item.lookup.address;
   if (!out.area && item.lookup?.area) out.area = item.lookup.area;
@@ -514,8 +520,10 @@ export function newItem({ id, url, note, source, by, at }, today) {
   refreshAuto(item, today);
   return item;
 }
+export const AUTO_VERSION = 2;   // 読み取りのルールを直したら上げる（同期が保存済みのものを一度だけ読み取り直す）
 export function refreshAuto(item, today) {
   const s = item.source || {};
+  item.autoV = AUTO_VERSION;
   item.auto = extractInfo({ text: s.text || '', title: s.title || '', author: s.author || '', note: item.note, platform: item.platform }, today);
   return item;
 }

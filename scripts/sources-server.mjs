@@ -204,7 +204,9 @@ export async function locate(info, center) {
     pages[q] = await wiki(q).catch(() => null);
     if (pages[q]?.thumb && !image) image = { url: pages[q].thumb, title: pages[q].title };
   }
-  if (info.address) geo = parseGsi(await gsi(info.address).catch(() => null));
+  // 住所の位置は、答えの地名に住所の市区町村が入っているときだけ使う（住所でない文を引いて、都庁の位置などが返るのを防ぐ）
+  const muni = String(info.address || '').match(/^(?:東京都|北海道|京都府|大阪府|[\u4e00-\u9fff]{2,3}県)?(.+?[市区町村])/)?.[1];
+  if (info.address && muni) geo = parseGsi(await gsi(info.address).catch(() => null), { must: muni });
   for (const q of Object.keys(pages)) if (!geo && q !== info.area && pages[q]?.geo) geo = pages[q].geo;   // 施設の記事の位置
   if (!geo && info.area) geo = parseGsiArea(await gsi(info.area).catch(() => null), info.area, center) || pages[info.area]?.geo || null;
   return { geo, image };
