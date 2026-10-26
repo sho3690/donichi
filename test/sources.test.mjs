@@ -68,6 +68,7 @@ test('YouTube: 説明欄の全文（shortDescription）と投稿者', () => {
   assert.equal(r.title, '週末マルシェ');
   assert.equal(r.text, '11月1日(土) 開催\n会場: 代々木公園 "けやき並木"\n入場無料');
   assert.equal(r.author, 'マルシェ実行委員会');
+  assert.equal(parseYouTube('<title>YouTube</title><meta name="description" content="YouTube でお気に入りの動画や音楽を楽しみ、オリジナルのコンテンツをアップロードして友だちや家族、世界中の人たちと共有しましょう。">'), null, '確認用ページの決まり文句は本文にしない');
   assert.equal(jsonStringAt('{"a":"x', 'a'), '', '閉じていない文字列は空');
   assert.equal(jsonStringAt('{"a":"\\ud800"}', 'a').length, 1, '壊れた文字でも落ちない');
 });

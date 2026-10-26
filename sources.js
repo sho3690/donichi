@@ -142,11 +142,15 @@ export function jsonStringAt(html, key, max = 20000) {
   try { return JSON.parse(`"${s.slice(start, i)}"`); } catch { return ''; }
 }
 
-// YouTube: og:description は途中で切れているので、ページの中の説明欄の全文（shortDescription）を使う
+// YouTube: og:description は途中で切れているので、ページの中の説明欄の全文（shortDescription）を使う。
+// クラウドから開くと確認用のページが返ることがあり、そのときの説明は YouTube 全体の決まり文句なので捨てる
+const YT_GENERIC = /^(YouTube でお気に入りの動画や音楽を楽しみ|Enjoy the videos and music you love)/;
 export function parseYouTube(html) {
   const meta = metaTags(html);
-  const title = meta['og:title'] || meta['twitter:title'] || '';
-  const text = jsonStringAt(html, 'shortDescription') || meta['og:description'] || meta.description || '';
+  const t = meta['og:title'] || meta['twitter:title'] || '';
+  const title = t === 'YouTube' ? '' : t;
+  const d = meta['og:description'] || meta.description || '';
+  const text = jsonStringAt(html, 'shortDescription') || (YT_GENERIC.test(d) ? '' : d);
   if (!title && !text) return null;
   return { author: jsonStringAt(html, 'ownerChannelName', 200), text, title, thumb: meta['og:image'] || '', via: 'youtube' };
 }
