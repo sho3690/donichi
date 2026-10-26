@@ -711,8 +711,9 @@ function sheetDetail(s) {
   const mine = item.by.includes(app.name);
   const tiktok = item.platform === 'tiktok';
   const noText = !item.source?.text && item.platform !== 'memo';
-  const waiting = item.fetch?.state === 'pending' && item.platform !== 'memo';
-  const failed = item.fetch?.state === 'failed' && noText;
+  const quick = item.platform === 'youtube' && !!item.source?.title;   // YouTube は題名が取れていれば十分（説明欄は鍵があるときだけ裏で足す）
+  const waiting = item.fetch?.state === 'pending' && item.platform !== 'memo' && !quick;
+  const failed = item.fetch?.state === 'failed' && noText && !quick;
   const body = h('div', { class: 'sheet-body' },
     waiting && !tiktok && h('div', { class: 'inline-alert info', role: 'status' }, '投稿の本文を取りに行っています。15分ほどで日付や場所がまとまります。待たずに、下にキャプションを貼ることもできます。'),
     noText && tiktok && (waiting || failed) && h('div', { class: 'inline-alert info', role: 'status' }, 'TikTok は投稿の本文（キャプション）を外から読めない仕組みです。TikTok で投稿を開いて説明文をコピーできたら、下に貼ってください。コピーできないときは、店名や日付など分かることを書くだけでも読み取ります。',
