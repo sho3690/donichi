@@ -1,9 +1,9 @@
 // オフラインでも開けるように、画面のファイルを控えておく（常にネットを優先）。
-const CACHE = 'donichi-v4';
+const CACHE = 'donichi-v5';
 const SHELL = ['./', './index.html', './style.css', './app.js', './logic.js', './crypto.js', './relay.js', './sources.js', './config.json', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(f => new Request(f, { cache: 'no-cache' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   // 同じ sho3690.github.io の他のアプリの控えは消さない（自分の古い版だけ）
@@ -12,7 +12,9 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
-  e.respondWith(fetch(e.request).then(res => {
+  // ブラウザの控え（GitHub Pages は10分）を使わず、毎回サーバーに新しい版が無いか確かめる
+  const req = e.request.mode === 'navigate' ? e.request : new Request(e.request, { cache: 'no-cache' });
+  e.respondWith(fetch(req).then(res => {
     if (res.ok && !u.search) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
     return res;
   }).catch(() => caches.match(e.request, { ignoreSearch: true })));

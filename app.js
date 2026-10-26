@@ -65,7 +65,11 @@ const app = {
 
 // ================= 起動 =================
 async function boot() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const had = !!navigator.serviceWorker.controller;   // 初めて開いたときの登録は「入れ替わり」ではない
+    navigator.serviceWorker.register('./sw.js').then(r => { app.sw = r; }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) { app.updated = true; reloadIfIdle(); } });
+  }
   try { app.cfg = await (await fetch('./config.json', { cache: 'no-store' })).json(); }
   catch { return fatal('設定を読み込めませんでした。電波の良い所で開き直してください。'); }
 
@@ -88,6 +92,14 @@ async function boot() {
   app.name = ls.get(K.name) || '';
   if (!app.name) return showLock({ nameOnly: true });
   start();
+}
+
+// 新しい版に入れ替わったら、入力中でないときに読み込み直す（ホーム画面のアプリは閉じない限り古い版のまま動き続けるため）
+async function reloadIfIdle() {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+  if (!app.updated || app.sheet || typing || !app.name || $('#shell').hidden) return;
+  if (!(await keyStore.get('keys').catch(() => null))) return;   // 鍵を保存できない環境では、開き直すと合言葉からになるので読み込み直さない
+  location.reload();
 }
 
 async function useKey(master) {
@@ -190,7 +202,10 @@ function wire() {
   if (wired) return; wired = true;
   document.addEventListener('click', onAction);
   window.addEventListener('hashchange', route);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { app.sw?.update().catch(() => {}); tick(true); }
+    reloadIfIdle();
+  });
   window.addEventListener('online', () => { flushOutbox(); tick(true); });
   const d = $('#sheet');
   d.addEventListener('close', () => { app.sheet = null; d.replaceChildren(); app.trigger?.focus?.({ preventScroll: true }); app.trigger = null; });
