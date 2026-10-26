@@ -56,6 +56,14 @@ function readOne(post, today) {
   return runClaude(prompt, SCHEMA, ['--tools', ''], 90000);
 }
 
+// 読み取りの住所が投稿に書かれているか（市区町村名まで本文かメモにあるか）。無ければ思い違いもありうるので、検索で調べ直す
+export function addressInPost(address, post) {
+  const t = `${post.text || ''}${post.memo || ''}`.replace(/\s/g, '');
+  const a = String(address || '').replace(/\s/g, '');
+  const m = a.match(/^(?:東京都|北海道|京都府|大阪府|[\u4e00-\u9fff]{2,3}県)?(.+?[市区町村])/);
+  return !!a && t.includes(m ? m[1] : a.slice(0, 6));
+}
+
 const FIND = {
   type: 'object',
   properties: {
@@ -98,6 +106,7 @@ for (const post of input.posts || []) {
   try {
     read[post.id] = readOne(post, input.today); ok++;
     const r = read[post.id];
+    if (r.address && !addressInPost(r.address, post)) r.address = null;
     if (!r.address) lookup(post.id, lookupName({ ...r, category: CATEGORIES[r.category] ? r.category : 'other' }), r.area);
   } catch (e) { console.log(`1件の読み取りに失敗（終了コード ${e?.status ?? '-'}）`); }   // エラー文には本文が含まれうるので出さない
 }
