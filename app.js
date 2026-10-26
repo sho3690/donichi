@@ -99,7 +99,15 @@ async function reloadIfIdle() {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   if (!app.updated || app.sheet || typing || !app.name || $('#shell').hidden) return;
   if (!(await keyStore.get('keys').catch(() => null))) return;   // 鍵を保存できない環境では、開き直すと合言葉からになるので読み込み直さない
+  try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify({ hash: location.hash, y: Math.round(scrollY) })); } catch { /* 位置は戻らなくても動く */ }
   location.reload();
+}
+// 読み込み直す前に見ていた位置へ戻す（中身が描けてから一度だけ）
+const SCROLL_KEY = 'donichi.scroll';
+function restoreScroll() {
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY)); sessionStorage.removeItem(SCROLL_KEY); } catch { return; }
+  if (saved && saved.hash === location.hash && saved.y > 0) window.scrollTo(0, saved.y);
 }
 
 async function useKey(master) {
@@ -203,7 +211,7 @@ function wire() {
   document.addEventListener('click', onAction);
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { app.sw?.update().catch(() => {}); tick(true); }
+    if (!document.hidden) { app.swChecked = Date.now(); app.sw?.update().catch(() => {}); tick(true); }
     reloadIfIdle();
   });
   window.addEventListener('online', () => { flushOutbox(); tick(true); });
@@ -268,6 +276,7 @@ async function tick(force = false) {
   const now = Date.now();
   if (!force && now - lastTick < 25000) return;
   lastTick = now;
+  if (now - (app.swChecked || 0) > 60000) { app.swChecked = now; app.sw?.update().catch(() => {}); }   // 開いている間も1分ごとに新しい版を確かめる
   const pending = app.st && Object.values(app.st.items).some(i => i.fetch?.state === 'pending');
   if (now - app.lastSnap > (pending ? 60000 : 180000)) return refresh();
   try { await pollRelay(); recompute(); } catch { app.relayOk = false; renderBanner(); }
@@ -299,6 +308,7 @@ function recompute() {
   if (sig === app.sig) return;
   app.sig = sig; app.st = st;
   render();
+  if (!app.scrollDone) { app.scrollDone = true; restoreScroll(); }
 }
 
 // ---- 変更を送る ----
