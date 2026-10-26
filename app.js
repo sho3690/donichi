@@ -102,6 +102,19 @@ async function reloadIfIdle() {
   try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify({ hash: location.hash, y: Math.round(scrollY) })); } catch { /* 位置は戻らなくても動く */ }
   location.reload();
 }
+// 公開中の画面のファイルが変わったら新しい版とみなす。
+// データの保存でも公開し直されて日付は毎回変わるので、ファイルの中身で比べる（変わっていなければ 304 で軽い）
+const CODE = ['./index.html', './style.css', './app.js', './logic.js', './crypto.js', './relay.js', './sources.js'];
+async function checkVersion() {
+  app.swChecked = Date.now();
+  app.sw?.update().catch(() => {});
+  try {
+    const texts = await Promise.all(CODE.map(f => fetch(f, { cache: 'no-cache' }).then(r => r.ok ? r.text() : Promise.reject(new Error(String(r.status))))));
+    const sig = b64u.enc(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texts.join('\0')))));
+    if (!app.codeSig) app.codeSig = sig;
+    else if (sig !== app.codeSig) { app.updated = true; reloadIfIdle(); }
+  } catch { /* 次の確認で */ }
+}
 // 読み込み直す前に見ていた位置へ戻す（中身が描けてから一度だけ）
 const SCROLL_KEY = 'donichi.scroll';
 function restoreScroll() {
@@ -200,6 +213,7 @@ function start({ joined = false } = {}) {
   if (cached?.sealed) open(app.keys, cached.sealed).then(s => { if (!app.snap) { app.snap = s; recompute(); } }).catch(() => {});
   if (joined) send('member.join');
   refresh().then(handleShare);
+  checkVersion();   // 今動いている版を覚える
   loadWeather();
   listen();
   setInterval(tick, 30000);
@@ -211,7 +225,7 @@ function wire() {
   document.addEventListener('click', onAction);
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { app.swChecked = Date.now(); app.sw?.update().catch(() => {}); tick(true); }
+    if (!document.hidden) { checkVersion(); tick(true); }
     reloadIfIdle();
   });
   window.addEventListener('online', () => { flushOutbox(); tick(true); });
@@ -276,7 +290,7 @@ async function tick(force = false) {
   const now = Date.now();
   if (!force && now - lastTick < 25000) return;
   lastTick = now;
-  if (now - (app.swChecked || 0) > 60000) { app.swChecked = now; app.sw?.update().catch(() => {}); }   // 開いている間も1分ごとに新しい版を確かめる
+  if (now - (app.swChecked || 0) > 60000) checkVersion();   // 開いている間も1分ごとに新しい版を確かめる
   const pending = app.st && Object.values(app.st.items).some(i => i.fetch?.state === 'pending');
   if (now - app.lastSnap > (pending ? 60000 : 180000)) return refresh();
   try { await pollRelay(); recompute(); } catch { app.relayOk = false; renderBanner(); }

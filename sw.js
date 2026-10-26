@@ -1,5 +1,5 @@
 // オフラインでも開けるように、画面のファイルを控えておく（常にネットを優先）。
-const CACHE = 'donichi-v5';
+const CACHE = 'donichi-v6';
 const SHELL = ['./', './index.html', './style.css', './app.js', './logic.js', './crypto.js', './relay.js', './sources.js', './config.json', './manifest.webmanifest', './icons/icon.svg'];
 
 self.addEventListener('install', e => {
