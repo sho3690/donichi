@@ -5,8 +5,8 @@ import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import { clientFetchers, parseInstagram, parseThreads, parseGeneric, parseYouTube, parseYouTubeApi } from '../sources.js';
-import { parseUrl } from '../logic.js';
+import { clientFetchers, parseInstagram, parseThreads, parseGeneric, parseYouTube, parseYouTubeApi, parseGsi, parseGsiArea, parseWikiPage } from '../sources.js';
+import { parseUrl, imageQueries } from '../logic.js';
 
 // 名乗りは正直に（他社のクローラーやブラウザのふりをしない）。断られたら、画面でキャプションを貼ってもらう
 const UA = 'DONICHI/1.0 (+https://sho3690.github.io/donichi/)';
@@ -179,4 +179,33 @@ export async function fetchOnServer(item) {
   const f = serverFetchers[item.platform];
   if (!f) return null;
   return f(item);
+}
+
+// ---- 位置と写真 ----
+// 住所 → 国土地理院の住所検索で位置。施設名・題名・エリア → Wikipedia の記事の写真と位置。
+// 行き先は決まった公的・公開の窓口だけ（受け取った URL は開かない）。名乗りは正直に。
+async function getJson(url) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10000);
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: ctl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+const gsi = q => getJson(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(q.slice(0, 100))}`);
+const wiki = title => getJson(`https://ja.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages%7Ccoordinates%7Cpageprops&piprop=thumbnail&pithumbsize=480&ppprop=disambiguation&titles=${encodeURIComponent(title.slice(0, 80))}`).then(parseWikiPage);
+
+// center: 天気を見る地域の中心（エリア名だけのときに、遠くの同じ地名を拾わないため）
+export async function locate(info, center) {
+  let geo = null, image = null;
+  const pages = {};
+  for (const q of imageQueries(info)) {
+    pages[q] = await wiki(q).catch(() => null);
+    if (pages[q]?.thumb && !image) image = { url: pages[q].thumb, title: pages[q].title };
+  }
+  if (info.address) geo = parseGsi(await gsi(info.address).catch(() => null));
+  for (const q of Object.keys(pages)) if (!geo && q !== info.area && pages[q]?.geo) geo = pages[q].geo;   // 施設の記事の位置
+  if (!geo && info.area) geo = parseGsiArea(await gsi(info.area).catch(() => null), info.area, center) || pages[info.area]?.geo || null;
+  return { geo, image };
 }

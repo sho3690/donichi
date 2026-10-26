@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   jstToday, jpHolidays, weekendFor, autoPlanDay, parseUrl, findUrls, extractDateRanges, extractInfo,
   emptyState, applyEvent, effectiveInfo, planWeekend, swapSlot, rankForSlot, maintain, eligibleOn,
+  distKm, kmLabel, sanitizeLookup, lookupName, imageQueries,
   sanitizePlan, dateLabel, htmlToText,
 } from '../logic.js';
 
@@ -296,4 +297,81 @@ test('item.source: YouTube の題名だけなら説明欄を取りにいける�
   assert.equal(st.items.x.fetch.state, 'ok');
   applyEvent(st, { id: 's3', t: 'item.source', at: 4, itemId: 'yt', source: { text: '11/1 開催 代々木公園', via: 'paste' } }, { today: '2026-10-26' });
   assert.equal(st.items.yt.fetch.state, 'ok');
+});
+
+test('割り振り: 住所から割り出した位置で、近い所を同じ日にまとめる（理由は2つまで）', () => {
+  const st = emptyState();
+  const T = '2026-10-26';
+  const put = (id, note, category, lat, lng) => {
+    applyEvent(st, { id: `a-${id}`, t: 'item.add', by: 'a', at: 1, item: { id, note } }, { today: T });
+    const it = st.items[id];
+    it.edits = { category, indoor: category !== 'nature' };
+    it.lookup = { q: id, address: `東京都テスト${id}`, area: null };
+    it.geo = { q: `a:東京都テスト${id}`, lat, lng };
+  };
+  put('S1', '渋谷の喫茶店', 'cafe', 35.659, 139.700);
+  put('K1', '鎌倉の海辺さんぽ', 'nature', 35.311, 139.546);
+  put('S2', '渋谷の古着屋', 'shop', 35.662, 139.703);
+  put('K2', '鎌倉のしらす丼', 'food', 35.316, 139.551);
+  const wx = { '2026-10-31': { code: 1, max: 20, min: 12, rain: 10 }, '2026-11-01': { code: 1, max: 21, min: 12, rain: 10 } };
+  const plan = planWeekend(st, weekendFor(T), { weather: wx, today: T, now: 0 });
+  const day = id => plan.slots.find(s => s.itemId === id)?.date;
+  assert.equal(plan.slots.length, 4);
+  assert.equal(day('S1'), day('S2'), '渋谷の2件は同じ日');
+  assert.equal(day('K1'), day('K2'), '鎌倉の2件は同じ日');
+  assert.notEqual(day('S1'), day('K1'));
+  assert.ok(plan.slots.some(s => /徒歩でまわれる近さ（約\d+m）/.test(s.reason)), plan.slots.map(s => s.reason).join(' / '));
+  assert.equal(effectiveInfo(st.items.S1).address, '東京都テストS1', '検索で調べた住所で補う');
+  assert.ok(effectiveInfo(st.items.S1).geo);
+  st.items.S1.edits.address = '東京都渋谷区道玄坂1-1';
+  assert.equal(effectiveInfo(st.items.S1).geo, undefined, '住所を直したら位置は割り出し直し待ち');
+  assert.ok(distKm({ lat: 35.659, lng: 139.700 }, { lat: 35.311, lng: 139.546 }) > 35);
+  assert.equal(kmLabel(0.42), '約400m');
+  assert.equal(kmLabel(3.24), '約3.2km');
+});
+
+test('割り振り: 雨の日は屋内（降水確率つきの理由）、暑い日は屋外を控える', () => {
+  const st = emptyState();
+  const T = '2026-10-26';
+  for (const [id, category, indoor] of [['IN', 'art', true], ['OUT', 'nature', false]]) {
+    applyEvent(st, { id: `a-${id}`, t: 'item.add', by: 'a', at: 1, item: { id, note: id } }, { today: T });
+    st.items[id].edits = { category, indoor };
+  }
+  st.settings.pace = 1;
+  const wx = { '2026-10-31': { code: 63, max: 33, min: 25, rain: 80 }, '2026-11-01': { code: 1, max: 20, min: 12, rain: 10 } };
+  const plan = planWeekend(st, weekendFor(T), { weather: wx, today: T, now: 0 });
+  const slot = id => plan.slots.find(s => s.itemId === id);
+  assert.equal(slot('IN').date, '2026-10-31');
+  assert.match(slot('IN').reason, /雨予報（80%）なので屋内/);
+  assert.equal(slot('OUT').date, '2026-11-01');
+  assert.match(slot('OUT').reason, /晴れ予報なので外へ/);
+});
+
+test('メンバー: 外すと一覧と「行きたい」から消え、取り消すと戻る', () => {
+  const st = emptyState();
+  const T = '2026-10-26';
+  applyEvent(st, { id: 'j1', t: 'member.join', by: '猪瀬', at: 1 }, { today: T });
+  applyEvent(st, { id: 'j2', t: 'item.add', by: 'ね', at: 2, item: { id: 'X', note: 'カフェ' } }, { today: T });
+  applyEvent(st, { id: 'j3', t: 'item.want', by: '猪瀬', at: 3, itemId: 'X' }, { today: T });
+  assert.deepEqual(Object.keys(st.members).sort(), ['ね', '猪瀬'].sort());
+  applyEvent(st, { id: 'r1', t: 'member.remove', by: '猪瀬', at: 4, name: 'ね' }, { today: T });
+  assert.deepEqual(Object.keys(st.members), ['猪瀬']);
+  assert.deepEqual(st.items.X.by, ['猪瀬']);
+  applyEvent(st, { id: 'r2', t: 'member.add', by: '猪瀬', at: 5, name: 'ね', joinedAt: 2, itemIds: ['X', 'nope', '__proto__'] }, { today: T });
+  assert.equal(st.members['ね'].joinedAt, 2);
+  assert.deepEqual(st.items.X.by, ['猪瀬', 'ね']);
+  applyEvent(st, { id: 'r3', t: 'member.remove', by: '猪瀬', at: 6, name: '__proto__' }, { today: T });
+  assert.equal(Object.getPrototypeOf(st.members), Object.prototype, '変な名前でも壊れない');
+});
+
+test('住所調べ: 都道府県から始まらない住所は使わない・名前の選び方', () => {
+  assert.deepEqual(sanitizeLookup({ q: '珈琲ニシ', address: '東京都目黒区上目黒2-1-1', area: '中目黒駅' }), { q: '珈琲ニシ', address: '東京都目黒区上目黒2-1-1', area: '中目黒' });
+  assert.deepEqual(sanitizeLookup({ q: 'x', address: '1 Infinite Loop, Cupertino', area: 'x' }), { q: 'x', address: null, area: null });
+  assert.equal(sanitizeLookup({ address: '東京都' }), null);
+  assert.equal(lookupName({ place: '表参道ヒルズ', title: '冬のマルシェ', category: 'event' }), '表参道ヒルズ');
+  assert.equal(lookupName({ title: '珈琲ニシ', category: 'cafe' }), '珈琲ニシ');
+  assert.equal(lookupName({ title: 'Me at the zoo', category: 'other' }), '');
+  assert.equal(lookupName({ title: '@abcの投稿', category: 'cafe' }), '');
+  assert.deepEqual(imageQueries({ place: '表参道ヒルズ 大階段前', title: '冬のマルシェ', area: '表参道' }), ['表参道ヒルズ 大階段前', '表参道ヒルズ', '冬のマルシェ', '表参道']);
+  assert.deepEqual(imageQueries({ title: 'TikTokの投稿' }), []);
 });

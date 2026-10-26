@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInstagram, parseThreads, parseGeneric, parseXOembed, parseYouTube, parseYouTubeApi, jsonStringAt, jsonLdLines } from '../sources.js';
+import { parseInstagram, parseThreads, parseGeneric, parseXOembed, parseYouTube, parseYouTubeApi, jsonStringAt, jsonLdLines, parseGsi, parseGsiArea, parseWikiPage } from '../sources.js';
 import { extractInfo } from '../logic.js';
 
 test('Instagram: og:title から本文と名前', () => {
@@ -116,4 +116,34 @@ test('YouTube Data API の答え: 題名・説明欄の全文・チャンネル�
   assert.equal(parseYouTubeApi({ items: [] }), null, '見つからない動画');
   assert.equal(parseYouTubeApi({ error: { code: 403 } }), null);
   assert.equal(parseYouTubeApi(null), null);
+});
+
+test('国土地理院: 住所の位置。エリア名は名前を含み、近くにあるものだけ', () => {
+  const j = [{ geometry: { coordinates: [140.44, 37.6] }, properties: { title: '福島県二本松市表' } }, { geometry: { coordinates: [139.7028, 35.6437] }, properties: { title: '東京都目黒区中目黒' } }];
+  assert.deepEqual(parseGsi(j), { lat: 37.6, lng: 140.44 });
+  assert.deepEqual(parseGsi(j, { must: '中目黒', near: { lat: 35.68, lng: 139.77 } }), { lat: 35.6437, lng: 139.7028 });
+  assert.equal(parseGsi(j, { must: '表参道', near: { lat: 35.68, lng: 139.77 } }), null);
+  assert.equal(parseGsi([{ geometry: { coordinates: [-122, 37] }, properties: { title: 'x' } }]), null, '日本の外は使わない');
+  assert.equal(parseGsi({}), null);
+});
+
+test('Wikipedia: 記事の写真と位置。曖昧さ回避や写真の置き場以外は使わない', () => {
+  const page = p => ({ query: { pages: { 1: p } } });
+  assert.deepEqual(parseWikiPage(page({ title: '表参道ヒルズ', thumbnail: { source: 'https://upload.wikimedia.org/a.jpg?utm_source=x' }, coordinates: [{ lat: 35.667, lon: 139.709 }] })),
+    { title: '表参道ヒルズ', thumb: 'https://upload.wikimedia.org/a.jpg', geo: { lat: 35.667, lng: 139.709 } });
+  assert.equal(parseWikiPage(page({ title: 'x', missing: '' })), null);
+  assert.equal(parseWikiPage(page({ title: '表参道', pageprops: { disambiguation: '' } })), null);
+  assert.equal(parseWikiPage(page({ title: 'x', thumbnail: { source: 'https://evil.example/a.jpg' } })).thumb, '');
+  assert.equal(parseWikiPage(null), null);
+});
+
+test('国土地理院: エリア名は「〇〇市」を優先し、無ければ近くの町名。遠い同名や似た名前は使わない', () => {
+  const g = (title, lng, lat) => ({ geometry: { coordinates: [lng, lat] }, properties: { title } });
+  const tokyo = { lat: 35.6812, lng: 139.7671 };
+  const tachikawa = [g('北海道蘭越町立川', 140.5, 42.8), g('東京都墨田区立川', 139.799, 35.691), g('東京都立川市', 139.414, 35.698), g('岡山県赤磐市立川', 134.0, 34.7)];
+  assert.deepEqual(parseGsiArea(tachikawa, '立川', tokyo), { lat: 35.698, lng: 139.414 });
+  assert.deepEqual(parseGsiArea([g('東京都目黒区中目黒', 139.7028, 35.6437), g('中目黒一丁目', 139.7, 35.64)], '中目黒', tokyo), { lat: 35.6437, lng: 139.7028 });
+  assert.equal(parseGsiArea([g('宮城県石巻市二子', 141.3, 38.4), g('神奈川県川崎市高津区二子', 139.62, 35.61)], '二子玉川', tokyo), null);
+  assert.deepEqual(parseGsiArea([g('埼玉県三郷市鎌倉', 139.88, 35.84), g('神奈川県鎌倉市', 139.546, 35.319)], '鎌倉', tokyo), { lat: 35.319, lng: 139.546 });
+  assert.equal(parseGsiArea([g('東京都墨田区立川', 139.799, 35.691)], '立川', { lat: 34.70, lng: 135.49 }), null, '大阪から遠い町名は使わない');
 });

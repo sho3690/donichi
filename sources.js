@@ -3,7 +3,7 @@
 // TikTok の oEmbed は 2026年に題名（本文）を返さなくなった。戻ったときのために試すだけ試す。
 // Instagram / Threads / YouTube の説明欄 / 一般のサイトは、GitHub Actions（scripts/sources-server.mjs）が取る。
 
-import { htmlToText, decodeEntities } from './logic.js';
+import { htmlToText, decodeEntities, distKm } from './logic.js';
 
 async function getJson(url, timeout = 8000) {
   const ctl = new AbortController();
@@ -244,4 +244,56 @@ export function parseGeneric(html) {
   const text = [...jsonLdLines(html), desc].filter(Boolean).join('\n');
   if (!title && !text) return null;
   return { author: meta['og:site_name'] || '', text, title: decodeEntities(title).trim(), thumb: meta['og:image'] || '', via: 'web' };
+}
+
+// ---- 位置と写真（サーバー側で使う） ----
+const inJapan = p => p.lat > 20 && p.lat < 46 && p.lng > 122 && p.lng < 154;
+
+// 国土地理院の住所検索の答え（[{ geometry: { coordinates: [経度, 緯度] }, properties: { title } }]）
+// must: 名前に含むこと / near と maxKm: その近くにあること（「表参道」で別の県の「表」を拾わないため）
+export function parseGsi(j, { must = '', near = null, maxKm = 60 } = {}) {
+  if (!Array.isArray(j)) return null;
+  for (const r of j.slice(0, 30)) {
+    const c = r?.geometry?.coordinates;
+    if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
+    const pt = { lat: c[1], lng: c[0] };
+    if (!inJapan(pt)) continue;
+    if (must && !String(r?.properties?.title || '').includes(must)) continue;
+    if (near && distKm(near, pt) > maxKm) continue;
+    return pt;
+  }
+  return null;
+}
+
+// 国土地理院で「立川」「中目黒」のようなエリア名だけを引いたとき。同じ地名が全国にあるので、
+// まず「東京都立川市」のように市区町村名そのもの、次に「東京都目黒区中目黒」のような町名を、地域の中心に近い順で選ぶ
+export function parseGsiArea(j, area, near) {
+  if (!Array.isArray(j) || !area || !near) return null;
+  const muni = [], town = [];
+  for (const r of j.slice(0, 300)) {
+    const c = r?.geometry?.coordinates;
+    if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
+    const pt = { lat: c[1], lng: c[0] };
+    const m = String(r?.properties?.title || '').match(/^(?:東京都|北海道|京都府|大阪府|[\u4e00-\u9fff]{2,3}県)(.+)$/);
+    if (!m || !inJapan(pt)) continue;
+    const rest = m[1];
+    if (['市', '区', '町', '村'].some(k => rest === area + k)) muni.push(pt);
+    else if (rest.endsWith(area) && /(市|区|町|村|郡)$/.test(rest.slice(0, rest.length - area.length))) town.push(pt);
+  }
+  const nearest = (list, maxKm) => list.map(p => [distKm(near, p), p]).filter(([d]) => d <= maxKm).sort((a, b) => a[0] - b[0])[0]?.[1] || null;
+  return nearest(muni, 200) || nearest(town, 60);
+}
+
+// Wikipedia の記事1件（題名・代表の写真・位置）。曖昧さ回避のページや写真の置き場以外の URL は使わない
+export function parseWikiPage(j) {
+  const pages = j?.query?.pages;
+  if (!pages || typeof pages !== 'object') return null;
+  const p = Object.values(pages)[0];
+  if (!p || typeof p !== 'object' || 'missing' in p || 'invalid' in p) return null;
+  if (p.pageprops && typeof p.pageprops === 'object' && 'disambiguation' in p.pageprops) return null;
+  const src = String(p.thumbnail?.source || '');
+  const thumb = /^https:\/\/(upload|thumb)\.wikimedia\.org\//.test(src) ? src.split('?')[0] : '';
+  const c = Array.isArray(p.coordinates) ? p.coordinates[0] : null;
+  const geo = c && Number.isFinite(c.lat) && Number.isFinite(c.lon) && inJapan({ lat: c.lat, lng: c.lon }) ? { lat: c.lat, lng: c.lon } : null;
+  return { title: String(p.title || ''), thumb, geo };
 }

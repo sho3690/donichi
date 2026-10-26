@@ -428,10 +428,47 @@ export function effectiveInfo(item) {
     for (const [k, v] of Object.entries(src)) if (v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && k !== 'dates' && k !== 'closedDays' && !v.length)) out[k] = v;
   }
   if (item.edits && Array.isArray(item.edits.dates)) out.dates = item.edits.dates;
+  // 投稿に住所が無ければ、施設を検索して見つけた住所で補う（手で直したものが最優先）
+  if (!out.address && item.lookup?.address) out.address = item.lookup.address;
+  if (!out.area && item.lookup?.area) out.area = item.lookup.area;
   out.title = out.title || 'メモ';
   out.category = has(CATEGORIES, out.category) ? out.category : 'other';
+  const q = geoKey(out);   // 位置はサーバーが住所などから割り出す。住所が変わったら次の同期で割り出し直す
+  if (q && item.geo?.q === q && Number.isFinite(item.geo.lat) && Number.isFinite(item.geo.lng)) out.geo = { lat: item.geo.lat, lng: item.geo.lng };
   return out;
 }
+
+// 位置を割り出す手がかり（住所 → 施設名 → エリア）。サーバーはこれが変わったときだけ割り出し直す
+export function geoKey(info) {
+  return info.address ? `a:${info.address}` : info.place ? `p:${info.place}` : info.area ? `r:${info.area}` : '';
+}
+// 写真を探す名前（施設名 → 題名 → エリア）。「〇〇の投稿」「メモ」のような仮の題名は使わない
+export function imageQueries(info) {
+  const t = info.title && !/の投稿$|^メモ$/.test(info.title) && info.title.length >= 2 ? info.title : '';
+  const head = x => (x ? String(x).trim().split(/[\s\u3000(（・/]/)[0] : '');   // 「表参道ヒルズ 大階段前」→「表参道ヒルズ」
+  const ph = head(info.place);
+  return [...new Set([info.place, ph.length >= 2 ? ph : '', t, info.area].filter(Boolean).map(x => String(x).trim()).filter(Boolean))].slice(0, 4);
+}
+export function distKm(a, b) {
+  const rad = x => x * Math.PI / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+// 住所を検索で調べる名前（施設名。無ければ種類が分かっているものの題名）
+export function lookupName(info) {
+  if (info.place) return String(info.place).slice(0, 60);
+  const t = info.title && !/の投稿$|^メモ$/.test(info.title) ? String(info.title) : '';
+  return t && info.category !== 'other' ? t.slice(0, 60) : '';
+}
+// 検索で調べた住所。都道府県から始まらないものは使わない
+export function sanitizeLookup(f) {
+  if (!f || typeof f !== 'object' || typeof f.q !== 'string') return null;
+  const address = typeof f.address === 'string' && new RegExp(`^${PREF}`).test(f.address.trim()) ? f.address.trim().slice(0, 80) : null;
+  const area = typeof f.area === 'string' && f.area.trim() ? f.area.trim().replace(/駅$/, '').slice(0, 20) : null;
+  return { q: f.q.slice(0, 60), address, area: address ? area : null };
+}
+export const kmLabel = d => (d < 1 ? `約${Math.max(100, Math.round(d * 10) * 100)}m` : `約${d < 10 ? d.toFixed(1) : Math.round(d)}km`);
 
 // ---- 状態とイベント ----
 // 状態は「スナップショット（Actions が保存）」＋「中継に届いたイベント」を順に適用して作る。
@@ -568,6 +605,22 @@ export function applyEvent(state, ev, { today } = {}) {
       if (by && !has(state.members, by)) state.members[by] = { joinedAt: at };
       break;
     }
+    case 'member.remove': {   // 設定から外す（「行きたい」の印も外す）
+      const name = safeName(ev.name);
+      if (!name || !has(state.members, name)) break;
+      delete state.members[name];
+      for (const x of Object.values(state.items)) if (Array.isArray(x.by) && x.by.includes(name)) x.by = x.by.filter(n => n !== name);
+      break;
+    }
+    case 'member.add': {   // 外したのを取り消す
+      const name = safeName(ev.name);
+      if (!name) break;
+      if (!has(state.members, name)) state.members[name] = { joinedAt: Number(ev.joinedAt) || at };
+      for (const id of Array.isArray(ev.itemIds) ? ev.itemIds.slice(0, 500) : []) {
+        if (safeId(id) && has(state.items, id) && Array.isArray(state.items[id].by) && !state.items[id].by.includes(name)) state.items[id].by.push(name);
+      }
+      break;
+    }
     default: break;
   }
   if (by && !has(state.members, by)) state.members[by] = { joinedAt: at };
@@ -584,7 +637,7 @@ export function sanitizePlan(p) {
   if (!days.length) return null;
   const slots = (Array.isArray(p.slots) ? p.slots : []).slice(0, 40)
     .filter(s => s && days.includes(s.date) && has(SLOT_DEF, s.slot))
-    .map(s => ({ date: s.date, slot: s.slot, itemId: safeId(s.itemId) ? s.itemId : null, reason: str(s.reason, 60) }));
+    .map(s => ({ date: s.date, slot: s.slot, itemId: safeId(s.itemId) ? s.itemId : null, reason: str(s.reason, 80) }));
   const weather = {};
   for (const d of days) {
     const w = p.weather?.[d];
@@ -700,18 +753,32 @@ function scoreOn(c, date, dayItems, weather, wkKey) {
   s += Math.min(15, age / 2);
   if (age >= 21) parts.push([Math.min(15, age / 2), `ストックして${Math.floor(age / 7)}週間`]);
   if (item.postponed) { s += 8 * Math.min(3, item.postponed); parts.push([8 * Math.min(3, item.postponed), '前回見送った分']); }
+  // 天気: 雨なら屋内、晴れなら屋外。暑すぎ・寒すぎる日は屋外を控えめに
   const w = weather?.[date];
   if (isRainy(w)) {
     if (info.indoor === false) s -= 60;
-    else if (info.indoor === true) { s += 12; parts.push([12, '雨予報なので屋内']); }
+    else if (info.indoor === true) { s += 15; parts.push([15, w.rain ? `雨予報（${w.rain}%）なので屋内` : '雨予報なので屋内']); }
+    else s -= 8;
   } else if (isFine(w) && info.indoor === false) { s += 14; parts.push([14, '晴れ予報なので外へ']); }
+  if (w && w.max >= 32) {
+    if (info.indoor === false) s -= 15;
+    else if (info.indoor === true) { s += 6; parts.push([6, `暑い日（${w.max}℃）なので屋内`]); }
+  } else if (w && w.max <= 8 && info.indoor === false) s -= 10;
+  // 場所: 同じ日の予定と近いほど良い（住所から割り出した位置。無ければ同じエリア名）
   const others = dayItems.map(x => x.info);
-  if (info.area && others.some(o => o.area === info.area)) { s += 12; parts.push([12, `${info.area}でまとめて回れる`]); }
+  const dists = info.geo ? others.filter(o => o.geo).map(o => distKm(info.geo, o.geo)) : [];
+  if (dists.length) {
+    const far = Math.max(...dists);
+    if (far <= 2) { s += 22; parts.push([22, `徒歩でまわれる近さ（${kmLabel(far)}）`]); }
+    else if (far <= 7) { s += 12; parts.push([12, `近くでまとめて回れる（${kmLabel(far)}）`]); }
+    else if (far > 25) s -= 30;
+    else if (far > 15) s -= 12;
+  } else if (info.area && others.some(o => o.area === info.area)) { s += 12; parts.push([12, `${info.area}でまとめて回れる`]); }
   if (others.some(o => o.category === info.category)) s -= 15;
   if (item.fetch?.state === 'pending' && !item.note) s -= 10;
   s += hash01(item.id + wkKey);
   parts.sort((a, b) => b[0] - a[0]);
-  return { score: s, reason: parts[0]?.[1] || 'ストックから' };
+  return { score: s, reason: parts.slice(0, 2).map(p => p[1]).join('・') || 'ストックから' };
 }
 
 export function freeSlotFor(info, taken, pace) {

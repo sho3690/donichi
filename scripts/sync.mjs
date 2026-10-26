@@ -11,8 +11,9 @@ import { open, seal, keysFrom, b64u } from '../crypto.js';
 import {
   applyEvent, jstToday, weekendFor, autoPlanDay, planWeekend, maintain, refreshAuto,
   parseWeather, weatherUrl, sanitizePlan, sanitizeSource, candidates, clip,
+  effectiveInfo, geoKey, imageQueries, lookupName, CITIES, has,
 } from '../logic.js';
-import { fetchOnServer } from './sources-server.mjs';
+import { fetchOnServer, locate } from './sources-server.mjs';
 import { loadKeys, loadState, saveState } from './state-io.mjs';
 
 const log = [];
@@ -70,6 +71,25 @@ async function main() {
   }
   if (due.length) say(`本文: ${due.length}件を取得 → 成功${got}件・失敗${missed}件`);
 
+  // 2.5) 位置と写真（割り振りで近い場所をまとめる・ストックに必ず絵を出すため）。手がかりが変わったものだけ、1回に8件まで
+  const home = has(CITIES, state.settings.city) ? CITIES[state.settings.city] : CITIES.tokyo;
+  let located = 0;
+  for (const item of Object.values(state.items)) {
+    if (located >= 8) break;
+    if (item.status !== 'inbox' && item.status !== 'done') continue;
+    const info = effectiveInfo(item);
+    const gk = geoKey(info), ik = imageQueries(info).join('|');
+    const needGeo = !!gk && item.geo?.q !== gk, needImage = !!ik && item.image?.q !== ik;
+    if (!needGeo && !needImage) continue;
+    try {
+      const r = await locate(info, { lat: home.lat, lng: home.lon });
+      if (needGeo) item.geo = { q: gk, lat: r.geo?.lat ?? null, lng: r.geo?.lng ?? null };
+      if (needImage) item.image = { q: ik, url: r.image?.url || '', title: r.image?.title || '' };
+      located++;
+    } catch { /* 次の回に */ }
+  }
+  if (located) say(`位置と写真: ${located}件を調べました`);
+
   // 3) 片づけ
   if (maintain(state, today)) say('片づけ: 期限切れ・終わった週末を整理');
 
@@ -100,9 +120,20 @@ async function main() {
       .filter(i => i.status === 'inbox' && !i.ai && (i.aiTries || 0) < 2 && (i.fetch?.state === 'ok' || i.fetch?.state === 'failed') && (i.source?.text || i.source?.title || i.note))
       .slice(0, 6)
       .map(i => ({ id: i.id, platform: i.platform, author: i.source?.author || '', text: clip([i.source?.title, i.source?.text].filter(Boolean).join('\n'), 1800), memo: clip(i.note || '', 600) }));
-    if (need.length) aiIn = await seal(await keysFrom(b64u.dec(process.env.AI_KEY.trim())), { today, posts: need });
-    needAi = need.length;
-    if (needAi) say(`Claude で読み取るもの: ${needAi}件`);
+    // 投稿に住所が無いもの: Claude がウェブ検索で施設の住所を調べる（同じ名前は二度調べない）
+    const reading = new Set(need.map(n => n.id));
+    const finds = [];
+    for (const i of Object.values(state.items)) {
+      if (finds.length >= 4) break;
+      if (i.status !== 'inbox' || !i.ai || reading.has(i.id) || (i.lookupTries || 0) >= 2) continue;
+      const info = effectiveInfo({ ...i, lookup: null });
+      const name = lookupName(info);
+      if (name && !info.address && i.lookup?.q !== name) finds.push({ id: i.id, name, area: info.area || '' });
+    }
+    if (need.length || finds.length) aiIn = await seal(await keysFrom(b64u.dec(process.env.AI_KEY.trim())), { today, city: home.label, posts: need, finds });
+    needAi = need.length + finds.length;
+    if (need.length) say(`Claude で読み取るもの: ${need.length}件`);
+    if (finds.length) say(`Claude で住所を調べるもの: ${finds.length}件`);
   }
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `need_ai=${needAi}\nai_in=${aiIn}\n`);
 }

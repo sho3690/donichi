@@ -12,6 +12,7 @@ name: 同期と週末の割り振り
 #
 # 守り:
 # - Claude Code（外部パッケージ）は別のジョブ（別のマシン）で動かす。そこにはデータの鍵（DONICHI_KEY）も書き込み権限も無い。
+#   投稿の読み取りは道具なし。住所調べだけウェブ検索を許し、施設名・エリア・地域だけを渡す。
 #   本文と結果の受け渡しは、受け渡し専用の鍵（AI_KEY）で封をしてジョブの出力で行う。
 # - 同期の結果は Claude より先に保存する（Claude が止まっても失われない）。
 # - checkout に資格情報を残さず、push のときだけトークンを使う。外部の Action はコミットで固定。
@@ -60,7 +61,7 @@ jobs:
     needs: sync
     if: needs.sync.outputs.need_ai != '' && needs.sync.outputs.need_ai != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:

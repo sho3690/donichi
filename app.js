@@ -50,6 +50,8 @@ function icon(name, cls = 'ic') {
   const u = document.createElementNS(SVGNS, 'use'); u.setAttribute('href', `#i-${name}`);
   s.append(u); return s;
 }
+// 日本語入力の変換を確定する Enter でフォームが送られないようにする（Safari は確定の Enter を keyCode 229 で送る）
+const imeGuard = e => { if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229)) e.preventDefault(); };
 const safeUrl = u => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; } };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : b64u.enc(crypto.getRandomValues(new Uint8Array(16))));
 const initial = name => [...String(name || '?').trim()][0] || '?';
@@ -116,7 +118,7 @@ function showLock({ error = '', nameOnly = false } = {}) {
     eye.setAttribute('aria-pressed', String(show)); eye.setAttribute('aria-label', show ? '合言葉を隠す' : '合言葉を表示');
   } }, icon('eye'));
   const errName = h('p', { class: 'err', id: 'name-err', hidden: true });
-  const nameIn = h('input', { class: 'input', id: 'nm', name: 'nickname', type: 'text', autocomplete: 'nickname', maxlength: '12', required: true, value: ls.get(K.name) || '', 'aria-describedby': 'nm-help name-err' });
+  const nameIn = h('input', { class: 'input', id: 'nm', name: 'nickname', type: 'text', autocomplete: 'nickname', maxlength: '12', required: true, value: ls.get(K.name) || '', 'aria-describedby': 'nm-help name-err', onkeydown: imeGuard });
   const submit = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'はじめる');
 
   const form = h('form', { novalidate: true, onsubmit: async e => {
@@ -535,15 +537,41 @@ function viewStock(st) {
 }
 
 // サムネイル。無い・期限切れのときは種類のアイコン
-function thumb(item, info = L.effectiveInfo(item)) {
-  const url = item.source?.thumb && safeUrl(item.source.thumb);
-  const box = h('span', { class: 'thumb', 'aria-hidden': 'true' });
-  const fallback = () => { box.classList.add('thumb-ic'); box.replaceChildren(icon(`c-${info.category}`)); };
-  if (url) {
-    const img = h('img', { src: url, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
-    img.addEventListener('error', fallback);
-    box.append(img);
-  } else fallback();
+// 写真が無いときの「イメージ」の絵（種類ごと・決まった図形だけ）。色は CSS の変数で明るい／暗い画面に合わせる
+const ILL = {
+  cafe: '<rect class="g" y="46" width="64" height="18"/><path class="fk" d="M21 28h18v9a8 8 0 0 1-8 8h-2a8 8 0 0 1-8-8z"/><path class="k" d="M39 31h2.5a3.5 3.5 0 0 1 0 7H39M15 46h30M27 15c-2 3 2 5 0 8M33 13c-2 3 2 5 0 8"/>',
+  food: '<rect class="g" y="48" width="64" height="16"/><path class="fk" d="M14 32h36c0 9-8 14-18 14s-18-5-18-14z"/><path class="k" d="M21 32c3-7 19-7 22 0M38 10l-7 19M45 12l-9 18"/>',
+  bar: '<circle class="u" cx="47" cy="15" r="7"/><circle class="s" cx="51" cy="12" r="6"/><path class="fk" d="M23 19h18l-2 11a7 7 0 0 1-14 0z"/><path class="k" d="M32 37v10M25 47h14"/><circle class="u" cx="14" cy="14" r="1.6"/><circle class="u" cx="20" cy="24" r="1.2"/>',
+  art: '<rect class="g" y="50" width="64" height="14"/><path class="k" d="M24 14l8-7 8 7"/><rect class="fk" x="14" y="14" width="36" height="28" rx="2"/><path class="k" d="M19 37l8-9 6 6 4-4 8 7"/><circle class="u" cx="41" cy="21" r="3.5"/>',
+  event: '<rect class="g" y="48" width="64" height="16"/><path class="k" d="M2 12q30 14 60 0"/><path class="uk" d="M12 15l3 8 4-6zM28 19l2 8 5-6zM44 18l2 8 4-7z"/><path class="fk" d="M16 48l16-19 16 19z"/><path class="k" d="M32 48v-9"/>',
+  nature: '<circle class="u" cx="47" cy="15" r="6"/><path class="g" d="M0 44q16-12 32 0t32 0v20H0z"/><path class="k" d="M17 47v-7M33 42v-5"/><path class="uk" d="M17 22l8 13h-4l5 7H8l5-7H9z"/><path class="fk" d="M33 26l6 9h-3l4 5H26l4-5h-3z"/>',
+  shop: '<rect class="g" y="50" width="64" height="14"/><path class="k" d="M26 24v-3a6 6 0 0 1 12 0v3"/><rect class="fk" x="18" y="24" width="28" height="24" rx="3"/><path class="k" d="M27 32a5 5 0 0 0 10 0"/>',
+  activity: '<rect class="g" y="50" width="64" height="14"/><path class="k" d="M25 50l7-24 7 24"/><circle class="fk" cx="32" cy="26" r="15"/><path class="k" d="M32 11v30M17 26h30M21.4 15.4l21.2 21.2M42.6 15.4 21.4 36.6"/>',
+  trip: '<circle class="u" cx="48" cy="14" r="6"/><path class="fk" d="M2 48l18-24 10 12 8-8 24 20z"/><path class="k" d="M16 30l4-6 4 5"/><rect class="g" y="48" width="64" height="16"/><path class="k" d="M30 64l3-16"/>',
+  other: '<path class="fk" d="M10 22l14-5 16 5 14-5v30l-14 5-16-5-14 5z"/><path class="k" d="M24 17v30M40 22v30"/><path class="uk" d="M32 10a7 7 0 0 1 7 7c0 6-7 13-7 13s-7-7-7-13a7 7 0 0 1 7-7z"/>',
+};
+function illustration(category) {
+  const svg = document.createElementNS(SVGNS, 'svg');
+  svg.setAttribute('viewBox', '0 0 64 64');
+  svg.setAttribute('class', 'ill');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = `<rect class="s" width="64" height="64"/>${ILL[category] || ILL.other}`;   // 中身は上の決まった図形だけ
+  return svg;
+}
+const photoUrls = item => [item.source?.thumb, item.image?.url].map(u => u && safeUrl(u)).filter(Boolean);
+// ill=false: 写真だけ（詳細の上の大きな画像）。どれも読み込めなければ枠ごと消す
+function thumb(item, info = L.effectiveInfo(item), cls = 'thumb', ill = true) {
+  const urls = photoUrls(item);
+  const box = h('span', { class: cls, 'aria-hidden': 'true' });
+  const next = () => {
+    const u = urls.shift();
+    if (!u && !ill) { (box.closest('figure') || box).remove(); return; }
+    if (!u) { box.classList.add('thumb-ill'); box.replaceChildren(illustration(info.category)); return; }
+    const img = h('img', { src: u, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
+    img.addEventListener('error', next, { once: true });
+    box.replaceChildren(img);
+  };
+  next();
   return box;
 }
 
@@ -697,7 +725,7 @@ function sheetDetail(s) {
     ['日程', L.dateLabel(info, today)],
     ['場所', info.place],
     ['エリア', [info.area, info.station && info.station !== info.area ? `最寄り: ${info.station}駅` : null].filter(Boolean).join(' · ')],
-    ['住所', info.address],
+    ['住所', info.address && (item.lookup?.address === info.address && !item.edits?.address && !item.ai?.address && !item.auto?.address ? `${info.address}（検索で調べた住所）` : info.address)],
     [info.category === 'event' || info.category === 'art' ? '時間' : '営業時間', info.hours],
     ['定休日', L.closedLabel(info)],
     ['料金', info.price],
@@ -714,7 +742,10 @@ function sheetDetail(s) {
   const quick = item.platform === 'youtube' && !!item.source?.title;   // YouTube は題名が取れていれば十分（説明欄は鍵があるときだけ裏で足す）
   const waiting = item.fetch?.state === 'pending' && item.platform !== 'memo' && !quick;
   const failed = item.fetch?.state === 'failed' && noText && !quick;
+  const wiki = !item.source?.thumb && item.image?.url && item.image.title ? item.image.title : '';   // 投稿の画像が無く、Wikipedia の写真を出すとき
   const body = h('div', { class: 'sheet-body' },
+    photoUrls(item).length > 0 && h('figure', { class: 'hero' }, thumb(item, info, 'hero-img', false),
+      wiki && h('figcaption', {}, 'イメージ写真: ', h('a', { href: `https://ja.wikipedia.org/wiki/${encodeURIComponent(wiki)}`, target: '_blank', rel: 'noopener noreferrer' }, `Wikipedia「${wiki}」`))),
     waiting && !tiktok && h('div', { class: 'inline-alert info', role: 'status' }, '投稿の本文を取りに行っています。15分ほどで日付や場所がまとまります。待たずに、下にキャプションを貼ることもできます。'),
     noText && tiktok && (waiting || failed) && h('div', { class: 'inline-alert info', role: 'status' }, 'TikTok は投稿の本文（キャプション）を外から読めない仕組みです。TikTok で投稿を開いて説明文をコピーできたら、下に貼ってください。コピーできないときは、店名や日付など分かることを書くだけでも読み取ります。',
       url && h('div', {}, h('a', { class: 'btn btn-secondary btn-sm', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'TikTok で投稿を開く', icon('out')))),
@@ -843,7 +874,7 @@ function sheetSettings() {
   const st = app.st;
   const pace = st?.settings.pace || 2;
   const city = st?.settings.city || 'tokyo';
-  const nameIn = h('input', { class: 'input', id: 's-name', type: 'text', value: app.name, maxlength: '12', autocomplete: 'nickname' });
+  const nameIn = h('input', { class: 'input', id: 's-name', type: 'text', value: app.name, maxlength: '12', autocomplete: 'nickname', onkeydown: imeGuard });
   const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-labelledby': 's-pace' },
     [[1, 'ゆったり', '1日1件'], [2, 'ふつう', '1日2件'], [3, 'たっぷり', '1日3件']].map(([v, l, sub]) =>
       h('label', {}, h('input', { type: 'radio', name: 'pace', value: String(v), checked: v === pace, onchange: () => { send('settings.set', { pace: v }); toast(`予定の量を「${l}」にしました`); } }), l, h('small', {}, sub))));
@@ -863,11 +894,21 @@ function sheetSettings() {
     h('section', { class: 'settings-group' }, h('h3', { id: 's-pace' }, '週末の予定の量'), seg,
       h('p', { class: 'help mt' }, '自動の割り振りで、1日に入れる数の上限です。')),
     h('section', { class: 'settings-group' }, h('h3', {}, h('label', { for: 's-city' }, '天気を見る地域')), citySel,
-      h('p', { class: 'help mt' }, '雨の日は屋内、晴れの日は屋外の予定を優先します。')),
+      h('p', { class: 'help mt' }, '雨の日は屋内、晴れの日は屋外を優先し、暑すぎる日は屋外を控えめにします。住所から場所を調べて、近い所を同じ日にまとめます。')),
     h('section', { class: 'settings-group' }, h('h3', {}, '招待'),
       h('p', {}, '招待したい人には、あなたが受け取った招待リンクをそのまま送ってください。合言葉を知っていれば、ここで招待リンクを作り直せます。リンクを開いた人は合言葉なしで入れるので、信頼できる人にだけ送ってください。'),
       inviteForm(),
-      members.length && h('div', { class: 'members', 'aria-label': 'メンバー' }, members.map(n => h('span', { class: 'member' }, h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(n)), n)))),
+      members.length && h('h4', { class: 'sub' }, 'メンバー'),
+      members.length && h('ul', { class: 'members', 'aria-label': 'メンバー' }, members.map(n => h('li', { class: 'member' },
+        h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(n)), n,
+        n === app.name ? h('span', { class: 'you' }, 'あなた')
+          : h('button', { class: 'member-x', type: 'button', 'aria-label': `${n} をメンバーから外す`, 'data-action': 'member-remove', 'data-name': n }, icon('x'))))),
+      app.sheet?.confirmMember && L.has(st?.members, app.sheet.confirmMember) && h('div', { class: 'inline-alert', role: 'alert' },
+        `「${app.sheet.confirmMember}」をメンバーから外しますか？ この人の「行きたい」の印も外れます。`,
+        h('div', { class: 'actions-row' },
+          h('button', { class: 'btn btn-danger btn-sm', type: 'button', 'data-action': 'member-remove-yes' }, '外す'),
+          h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'member-remove-no' }, 'やめる'))),
+      members.length > 1 && h('p', { class: 'help mt' }, '名前の打ち間違いや、使わなくなった人を外せます。外した人もリンクを持っていれば、また使い始めると戻ります。')),
     h('section', { class: 'settings-group' }, h('h3', {}, '同期'),
       h('p', { class: 'status' }, h('span', { class: `dot ${status[0]}`, 'aria-hidden': 'true' }), status[1], st?.syncedAt ? ` · 最終保存 ${hm(st.syncedAt)}` : ''),
       h('p', { class: 'mt' }, '追加や変更はすぐ他の人にも届きます。投稿の読み取りと保存は15分ごと、今週末の割り振りは毎週木曜の朝7時に自動で行います。'),
@@ -948,6 +989,29 @@ function onAction(e) {
     case 'want': send('item.want', { itemId: id }); break;
     case 'unwant': send('item.want', { itemId: id, off: true }); break;
     case 'refetch': send('item.refetch', { itemId: id }); toast('もう一度取りに行きます（15分ほど）'); break;
+    // メンバーを外す: × → その場で確かめる（設定のシートの外の通知は押せないので、取り消しではなく確認にする）
+    case 'member-remove': {
+      const name = el.dataset.name;
+      if (!name || name === app.name || !L.has(st?.members, name) || app.sheet?.kind !== 'settings') break;
+      app.sheet.confirmMember = name;
+      renderSheet();
+      $('#sheet [data-action=member-remove-yes]')?.focus();
+      break;
+    }
+    case 'member-remove-yes': {
+      const name = app.sheet?.confirmMember;
+      if (app.sheet) delete app.sheet.confirmMember;
+      if (name && name !== app.name && L.has(st?.members, name)) { send('member.remove', { name }); toast(`「${name}」をメンバーから外しました`); }
+      renderSheet();
+      break;
+    }
+    case 'member-remove-no': {
+      const name = app.sheet?.confirmMember;
+      if (app.sheet) delete app.sheet.confirmMember;
+      renderSheet();
+      if (name) $(`#sheet .member-x[data-name="${CSS.escape(name)}"]`)?.focus();
+      break;
+    }
     case 'done': {
       if (!L.has(st?.items, id)) break;
       send('item.status', { itemId: id, status: 'done' });
