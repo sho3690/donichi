@@ -1,6 +1,6 @@
 // Actions 用: 鍵の確認と、暗号化した data/state.json の読み書き。
 import { readFile, writeFile } from 'node:fs/promises';
-import { keysFrom, seal, open, b64u } from '../crypto.js';
+import { keysFrom, seal, open, openDrop, b64u } from '../crypto.js';
 import { emptyState } from '../logic.js';
 
 export const ROOT = new URL('..', import.meta.url);
@@ -18,6 +18,11 @@ export async function loadKeys() {
 export async function loadState(keys) {
   const file = JSON.parse(await readFile(STATE, 'utf8').catch(() => '{}'));
   return file.sealed ? open(keys, file.sealed) : emptyState();
+}
+// 入れるだけのリンクの受け口（drop.json）。まだ作っていなければ null
+export async function loadDrop(keys) {
+  const text = await readFile(new URL('drop.json', ROOT), 'utf8').catch(() => null);
+  return text ? openDrop(keys, JSON.parse(text)) : null;
 }
 export async function saveState(keys, state) {
   await writeFile(STATE, JSON.stringify({ v: 1, sealed: await seal(keys, state) }) + '\n');

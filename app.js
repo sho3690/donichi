@@ -1,6 +1,6 @@
 // 土日 DONICHI — 画面。データは「保存済みのスナップショット」＋「中継に届いた変更」を合わせて表示する。
 import * as L from './logic.js';
-import { keysFrom, deriveMaster, seal, open, b64u } from './crypto.js';
+import { keysFrom, deriveMaster, seal, open, openDrop, dropOpen, b64u } from './crypto.js';
 import { publish, poll, MAX_BODY } from './relay.js';
 import { fetchInBrowser } from './sources.js';
 
@@ -61,6 +61,7 @@ const hm = ts => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDa
 const app = {
   cfg: null, keys: null, name: '', snap: null, relay: new Map(), outbox: [], sent: [], st: null,
   view: 'weekend', filter: 'all', wx: {}, sheet: null, lastSnap: 0, lastPoll: 0, relayOk: true, snapOk: true, trigger: null, es: null,
+  drop: null, dropSeen: new Set(), dropEs: null,
 };
 
 // ================= 起動 =================
@@ -213,6 +214,7 @@ function start({ joined = false } = {}) {
   if (cached?.sealed) open(app.keys, cached.sealed).then(s => { if (!app.snap) { app.snap = s; recompute(); } }).catch(() => {});
   if (joined) send('member.join');
   refresh().then(handleShare);
+  loadDrop();
   checkVersion();   // 今動いている版を覚える
   loadWeather();
   listen();
@@ -250,6 +252,46 @@ async function pollRelay() {
   for (const m of msgs) await addRelayMessage(m);
   app.lastPoll = Date.now(); app.relayOk = true;
 }
+// 入れるだけのリンク（ChatGPT の dots など）から届いたものも、15分ごとの保存を待たずに見せる
+async function loadDrop() {
+  if (app.drop) return;
+  try {
+    const res = await fetch('./drop.json', { cache: 'no-store' });
+    if (res.ok) app.drop = await openDrop(app.keys, await res.json());
+  } catch { /* 無ければ15分ごとの保存で届く */ }
+  if (!app.drop) return;
+  listenDrop();
+  if (await pollDrop().catch(() => false)) recompute();
+}
+async function pollDrop() {
+  if (!app.drop || !app.snap) return false;   // 「行きたい人」がメンバーかを確かめるので、保存済みを読んでから
+  const dt = app.snap.log?.dropTime || 0;
+  let added = false;
+  for (const m of await poll(app.cfg.relay, app.drop.topic, dt ? Math.max(0, dt - 900) : 'all')) if (await addDropMessage(m)) added = true;
+  return added;
+}
+async function addDropMessage(m) {
+  if (!app.snap || typeof m?.id !== 'string' || app.dropSeen.has(m.id)) return false;
+  app.dropSeen.add(m.id);
+  let added = false;
+  try {
+    for (const ev of L.fromDrop(await dropOpen(app.drop.key, m.message), m.time, (app.st || app.snap).members)) {
+      if (app.relay.has(ev.id)) continue;
+      ev.time = m.time; app.relay.set(ev.id, ev); added = true;
+    }
+  } catch { /* 読めないものは無視 */ }
+  return added;
+}
+function listenDrop() {
+  try {
+    app.dropEs?.close();
+    const es = new EventSource(`${app.cfg.relay}/${app.drop.topic}/sse`);
+    es.addEventListener('message', async e => {
+      try { if (await addDropMessage(JSON.parse(e.data))) scheduleRecompute(); } catch { /* 無視 */ }
+    });
+    app.dropEs = es;
+  } catch { /* 定期の確認で補う */ }
+}
 async function addRelayMessage(m) {
   try {
     const ev = await open(app.keys, m.message);
@@ -263,6 +305,7 @@ async function addRelayMessage(m) {
 async function refresh() {
   try { await fetchSnapshot(); } catch { app.snapOk = false; }
   try { await pollRelay(); } catch { app.relayOk = false; }
+  await pollDrop().catch(() => {});
   if (!app.snap) { render(); return; }
   // 保存済みに入った変更は中継の控えから外す
   const applied = new Set(app.snap.log.applied);
@@ -293,7 +336,7 @@ async function tick(force = false) {
   if (now - (app.swChecked || 0) > 60000) checkVersion();   // 開いている間も1分ごとに新しい版を確かめる
   const pending = app.st && Object.values(app.st.items).some(i => i.fetch?.state === 'pending');
   if (now - app.lastSnap > (pending ? 60000 : 180000)) return refresh();
-  try { await pollRelay(); recompute(); } catch { app.relayOk = false; renderBanner(); }
+  try { await pollRelay(); await pollDrop().catch(() => {}); recompute(); } catch { app.relayOk = false; renderBanner(); }
   if (app.outbox.length) flushOutbox();
   if (now - (ls.json(K.wx, {}).at || 0) > 3 * 3600000) loadWeather();
 }
@@ -795,7 +838,7 @@ function sheetDetail(s) {
     facts.length && h('dl', { class: 'facts' }, facts.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     url && h('a', { class: 'src-link', href: url, target: '_blank', rel: 'noopener noreferrer' }, `${L.PLATFORM_LABEL[item.platform]}で元の投稿を開く`, icon('out')),
     item.source?.text && h('details', { class: 'raw' }, h('summary', {}, '投稿の本文'), h('p', { class: 'caption' }, item.source.text)),
-    h('p', { class: 'byline' }, `${item.by.length ? `${item.by.join('・')}が行きたい` : ''}${item.addedAt ? ` · ${hm(item.addedAt)} に${item.addedBy || ''}が追加` : ''}${item.ai ? ' · Claudeが読み取り' : ''}`),
+    h('p', { class: 'byline' }, `${item.by.length ? `${item.by.join('・')}が行きたい` : ''}${item.addedAt ? ` · ${hm(item.addedAt)} に${item.via ? `${item.via}から` : `${item.addedBy || ''}が`}追加` : ''}${item.ai ? ' · Claudeが読み取り' : ''}`),
     h('div', { class: 'actions-row' },
       h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': mine ? 'unwant' : 'want', 'data-id': item.id }, mine ? '「行きたい」を外す' : '私も行きたい'),
       h('button', { class: 'btn btn-danger btn-sm', type: 'button', 'data-action': 'delete', 'data-id': item.id }, icon('trash'), '削除')));
@@ -948,6 +991,7 @@ function sheetSettings() {
           h('button', { class: 'btn btn-danger btn-sm', type: 'button', 'data-action': 'member-remove-yes' }, '外す'),
           h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'member-remove-no' }, 'やめる'))),
       members.length > 1 && h('p', { class: 'help mt' }, '名前の打ち間違いや、使わなくなった人を外せます。外した人もリンクを持っていれば、また使い始めると戻ります。')),
+    dropSettings(),
     h('section', { class: 'settings-group' }, h('h3', {}, '同期'),
       h('p', { class: 'status' }, h('span', { class: `dot ${status[0]}`, 'aria-hidden': 'true' }), status[1], st?.syncedAt ? ` · 最終保存 ${hm(st.syncedAt)}` : ''),
       h('p', { class: 'mt' }, '追加や変更はすぐ他の人にも届きます。投稿の読み取りと保存は15分ごと、今週末の割り振りは毎週木曜の朝7時に自動で行います。'),
@@ -955,6 +999,32 @@ function sheetSettings() {
     h('section', { class: 'settings-group' }, h('h3', {}, 'この端末'),
       h('p', {}, 'この端末から合言葉を消します。もう一度使うときは招待リンクか合言葉が必要です。'),
       h('div', { class: 'actions-row' }, h('button', { class: 'btn btn-danger btn-sm', type: 'button', 'data-action': 'logout' }, 'この端末から外す'))))];
+}
+
+// ChatGPT の dots など、自分のブラウザを持つ AI に「入れることだけ」を任せる
+function dropSettings() {
+  const head = h('h3', {}, 'ChatGPT などから入れる');
+  if (!app.drop) return h('section', { class: 'settings-group' }, head, h('p', {}, '準備中です。少したってから開き直してください。'));
+  const link = `${new URL('drop.html', location.href).href.split('#')[0]}#w=${app.drop.topic}&as=${encodeURIComponent(app.name)}&by=ChatGPT`;
+  const forAi = [
+    '「土日」（土日 DONICHI）は、週末に行きたいお店・イベント・場所をストックしておく私のアプリです。ストックしたものは、毎週木曜の朝に今週末の予定として自動で割り振られます。',
+    '私が「土日に入れておいて」「ストックしておいて」「週末の候補に入れて」と頼んだら、あなたのブラウザで次の手順で入れてください。',
+    '',
+    `1. このリンクを開く: ${link}`,
+    '2. 「リンク」の欄に、行きたい所の投稿やページのリンクを貼る（Instagram・Threads・X・TikTok・YouTube の投稿、お店やイベントのページなど。1行に1つ）。リンクが無いときは、店名と場所が分かる短い文を「メモ」の欄に書く。期間・行きたい理由などの補足も「メモ」の欄へ。',
+    '3. 「ストックに入れる」ボタンを押す。「ストックに入れました」と出たら完了。私には「『土日』に入れました：〇〇」とだけ伝える。',
+    '',
+    '・リンクの末尾に &u=リンク&n=メモ を付けて開くと、欄が埋まった状態で開きます（URL エンコードする。複数のリンクは %0A で改行）。',
+    '・パスワードや個人情報は入れない。',
+    '・このリンクでできるのは入れることだけです（ストックの中は見えません）。リンクは他の人や他のサービスに教えない。',
+  ].join('\n');
+  return h('section', { class: 'settings-group' }, head,
+    h('p', {}, '合言葉なしで「ストックに入れることだけ」ができるリンクです。このリンクからは、ストックの中は見えません。'),
+    h('p', { class: 'mt' }, 'ChatGPT の dots のように自分のブラウザを持つ AI には、下のボタンで説明文をコピーし、そのまま貼り付けて覚えてもらってください。「土日に入れておいて」と頼むと、あなたの「行きたい」付きで入ります。'),
+    h('div', { class: 'actions-row' },
+      h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'copy', 'data-text': forAi, 'data-done': 'ChatGPT に渡す文をコピーしました。dots に貼り付けてください。' }, icon('copy'), 'ChatGPT に渡す文をコピー'),
+      h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'copy', 'data-text': link, 'data-done': 'リンクをコピーしました。' }, icon('link'), 'リンクだけコピー')),
+    h('p', { class: 'help mt' }, 'リンクが知らない人に渡ってしまったときは、Mac の Claude に「土日の入れるだけのリンクを作り直して」と頼んでください（古いリンクは使えなくなります）。'));
 }
 
 // 招待リンクを作る（合言葉から親鍵を作り直す。親鍵は端末に保存しない）
@@ -1116,6 +1186,23 @@ function onAction(e) {
       next.slots.sort((x, y) => x.date.localeCompare(y.date) || L.SLOT_DEF[x.slot].order - L.SLOT_DEF[y.slot].order);
       closeSheet();
       setPlan(next, `${L.mdw(s.date)}に入れました`, plan);
+      break;
+    }
+    case 'copy': {   // 設定のシートの中に結果を出す（シートの外の通知は、シートを閉じるまで見えにくい）
+      const text = el.dataset.text, row = el.closest('.actions-row');
+      const say = msg => {
+        let p = row.parentElement.querySelector('.copy-status');
+        if (!p) { p = h('p', { class: 'help copy-status', role: 'status' }); row.after(p); }
+        p.textContent = msg;
+      };
+      const fallback = () => {
+        let box = row.parentElement.querySelector('.copy-box');
+        if (!box) { box = h('textarea', { class: 'textarea copy-box', readonly: true, 'aria-label': 'コピーする文字' }); row.after(box); }
+        box.value = text; box.focus(); box.select();
+        say('コピーできませんでした。出てきた文字を選んでコピーしてください。');
+      };
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => say(el.dataset.done || 'コピーしました。'), fallback);
+      else fallback();
       break;
     }
     case 'logout': {

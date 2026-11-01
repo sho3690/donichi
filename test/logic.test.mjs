@@ -4,7 +4,7 @@ import {
   jstToday, jpHolidays, weekendFor, autoPlanDay, parseUrl, findUrls, extractDateRanges, extractInfo,
   emptyState, applyEvent, effectiveInfo, planWeekend, swapSlot, rankForSlot, maintain, eligibleOn,
   distKm, kmLabel, sanitizeLookup, lookupName, imageQueries, AUTO_VERSION,
-  sanitizePlan, dateLabel, htmlToText,
+  sanitizePlan, dateLabel, htmlToText, fromDrop, DROP_MAX_ITEMS,
 } from '../logic.js';
 
 const TODAY = '2026-10-26';   // 月曜
@@ -398,4 +398,35 @@ test('住所: 「東京都が選定する…」のような文は住所にしな
   it.edits = { address: '東京都新宿区河田町10-10 小笠原伯爵邸' };
   assert.equal(effectiveInfo(it).address, '東京都新宿区河田町10-10 小笠原伯爵邸', '手で直したものが最優先');
   assert.equal(it.autoV, AUTO_VERSION, '読み取りのルールの版を記録');
+});
+
+test('入れるだけのリンク: リンクごとに1件、行きたい人はメンバーのときだけ', () => {
+  const st = emptyState();
+  st.members = { 'ねこ🐱': { joinedAt: 1 } };
+  const d = { v: 1, id: 'Zx9_drop-1', by: 'ChatGPT', as: 'ねこ🐱', items: [
+    { url: 'https://www.instagram.com/p/BsOGulcndj-/', note: '12月まで' }, { url: '', note: '表参道の新しいカフェ' },
+    { url: 'javascript:alert(1)' }, { note: '   ' }, null, 'https://example.com/a'] };
+  const evs = fromDrop(d, 1793000000, st.members);
+  assert.equal(evs.length, 2, '形の悪いもの・空のもの・文字列は入れない');
+  assert.equal(evs[0].by, 'ねこ🐱');
+  for (const ev of evs) assert.ok(applyEvent(st, ev, { today: '2026-11-02' }));
+  const items = Object.values(st.items);
+  assert.deepEqual(items.map(i => [i.platform, i.via, i.by[0], i.note]), [['instagram', 'ChatGPT', 'ねこ🐱', '12月まで'], ['memo', 'ChatGPT', 'ねこ🐱', '表参道の新しいカフェ']]);
+  assert.equal(items[0].fetch.state, 'pending', 'リンクは同期で本文を取りにいく');
+  assert.deepEqual(Object.keys(st.members), ['ねこ🐱']);
+
+  // 同じ入れ方を画面と同期の両方で当てても1件（同じ id）
+  assert.equal(fromDrop(d, 1793000000, st.members).filter(ev => applyEvent(st, ev)).length, 0);
+  // 知らない名前ではメンバーを増やさない・同じリンクは「行きたい」が増えるだけ
+  const st2 = emptyState(); st2.members = { 'ほうちゃん': { joinedAt: 1 } };
+  applyEvent(st2, { id: 'e1', t: 'item.add', by: 'ほうちゃん', at: 1, item: { id: 'i1', url: 'https://www.instagram.com/p/BsOGulcndj-/' } });
+  const e2 = fromDrop({ ...d, id: 'other-1', as: 'しらない人' }, 1793000000, st2.members);
+  assert.equal(e2[0].by, '');
+  e2.forEach(ev => applyEvent(st2, ev));
+  assert.deepEqual(Object.keys(st2.members), ['ほうちゃん']);
+  assert.equal(Object.values(st2.items).filter(i => i.platform === 'instagram').length, 1);
+  // 壊れたもの・多すぎるもの
+  assert.deepEqual(fromDrop({ id: '../x', items: [] }), []);
+  assert.deepEqual(fromDrop(null), []);
+  assert.equal(fromDrop({ id: 'many', items: Array.from({ length: 30 }, (_, i) => ({ note: `メモ${i}` })) }).length, DROP_MAX_ITEMS);
 });

@@ -7,14 +7,14 @@
 
 import { appendFile } from 'node:fs/promises';
 import { poll } from '../relay.js';
-import { open, seal, keysFrom, b64u } from '../crypto.js';
+import { open, seal, keysFrom, dropOpen, b64u } from '../crypto.js';
 import {
   applyEvent, jstToday, weekendFor, autoPlanDay, planWeekend, maintain, refreshAuto,
   parseWeather, weatherUrl, sanitizePlan, sanitizeSource, candidates, clip,
-  effectiveInfo, geoKey, imageQueries, lookupName, CITIES, has, AUTO_VERSION,
+  effectiveInfo, geoKey, imageQueries, lookupName, CITIES, has, AUTO_VERSION, fromDrop,
 } from '../logic.js';
 import { fetchOnServer, locate } from './sources-server.mjs';
-import { loadKeys, loadState, saveState } from './state-io.mjs';
+import { loadKeys, loadState, saveState, loadDrop } from './state-io.mjs';
 
 const log = [];
 const say = s => { log.push(s); console.log(s); };
@@ -41,6 +41,23 @@ async function main() {
     } catch { broken++; }   // おかしなイベント1件で同期全体を止めない
   }
   say(`中継: ${msgs.length}件を確認、${applied}件を反映${broken ? `、読めないもの${broken}件` : ''}`);
+
+  // 1.5) 入れるだけのリンク（ChatGPT の dots など）から届いたもの
+  let drop = null;
+  try { drop = await loadDrop(keys); } catch { say('drop.json を開けませんでした（合言葉を変えたあとなら scripts/drop-setup.mjs --rotate で作り直す）'); }
+  if (drop) {
+    let dmsgs = [], dropped = 0;
+    try {
+      const dt = state.log.dropTime;
+      dmsgs = await poll(cfg.relay, drop.topic, dt ? Math.max(0, dt - 900) : 'all');
+    } catch (e) { say(`入れるだけのリンクの受け口に届きませんでした（次の回で取り込みます）: ${e.name}`); }
+    for (const m of dmsgs) {
+      try { for (const ev of fromDrop(await dropOpen(drop.key, m.message), m.time, state.members)) if (applyEvent(state, ev, { today: jstToday(ev.at) })) dropped++; }
+      catch { /* 読めないものは飛ばす */ }
+      if (m.time > (state.log.dropTime || 0)) state.log.dropTime = m.time;
+    }
+    if (dmsgs.length) say(`入れるだけのリンク: ${dmsgs.length}件を確認、${dropped}件を追加`);
+  }
 
   // 2) 投稿の本文
   const due = Object.values(state.items).filter(i => i.fetch?.state === 'pending' && (i.fetch.nextAt || 0) <= now).slice(0, 15);

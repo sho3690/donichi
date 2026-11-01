@@ -25,6 +25,14 @@ const salt = b64u.enc(randomBytes(16));
 const master = await deriveMaster(passphrase, salt, ITER);
 const keys = await keysFrom(master);
 
+// 入れるだけのリンク（drop.json）も新しい鍵で封をし直す（リンクはそのまま使える）
+const dropText = keep ? await readFile(new URL('drop.json', ROOT), 'utf8').catch(() => null) : null;
+if (dropText) {
+  const oldKeys = await keysFrom(b64u.dec((await readFile(new URL('.secrets/master.b64', ROOT), 'utf8')).trim()));
+  const d = JSON.parse(dropText);
+  await writeFile(new URL('drop.json', ROOT), JSON.stringify({ v: 1, pub: d.pub, tag: d.tag, sealed: await seal(keys, await open(oldKeys, d.sealed)) }, null, 1) + '\n');
+}
+
 await mkdir(new URL('.secrets/', ROOT), { recursive: true });
 await writeFile(new URL('config.json', ROOT), JSON.stringify({ v: 1, salt, iterations: ITER, check: keys.check, relay: 'https://ntfy.sh' }, null, 2) + '\n');
 await writeFile(new URL('data/state.json', ROOT), JSON.stringify({ v: 1, sealed: await seal(keys, state) }) + '\n');

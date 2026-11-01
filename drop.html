@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://ntfy.sh; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f8f9fa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
+<title>ストックに入れる — 土日 DONICHI</title>
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="drop.js"></script>
+</head>
+<body>
+<main class="lock">
+  <div class="lock-card">
+    <div class="brand"><span class="brand-ja">土日</span><span class="brand-en">DONICHI</span></div>
+    <h1>ストックに入れる</h1>
+    <p class="lead">行きたい所のリンクを貼って「ストックに入れる」を押すと、土日のストックに届きます。このページからは、ストックの中は見えません。</p>
+
+    <form id="drop-form" novalidate hidden>
+      <div class="field">
+        <label for="u">リンク</label>
+        <textarea class="textarea" id="u" name="u" rows="3" maxlength="6000" aria-describedby="u-help u-err"></textarea>
+        <p class="help" id="u-help">Instagram・Threads・X・TikTok・YouTube の投稿や、お店・イベントのページ。いくつでも（1行に1つ）。リンクが無いときは、メモだけでも入れられます。</p>
+        <p class="err" id="u-err" hidden></p>
+      </div>
+      <div class="field">
+        <label for="n">メモ<span class="opt">任意</span></label>
+        <textarea class="textarea" id="n" name="n" rows="2" maxlength="1500" aria-describedby="n-help"></textarea>
+        <p class="help" id="n-help">店名・場所・期間・行きたい理由など。</p>
+      </div>
+      <button class="btn btn-primary btn-block" type="submit" id="go">ストックに入れる</button>
+    </form>
+
+    <div id="result" class="drop-result" role="status" aria-live="polite" hidden></div>
+    <div id="problem" class="drop-problem" role="alert" hidden></div>
+
+    <p class="note">このページを開くリンクは、土日のメンバーが渡したものです。リンクを知っている人はストックに入れられますが、中を見ることはできません。</p>
+  </div>
+</main>
+</body>
+</html>

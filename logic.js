@@ -508,11 +508,11 @@ export function sanitizeInfo(e) {
   return out;
 }
 
-export function newItem({ id, url, note, source, by, at }, today) {
+export function newItem({ id, url, note, source, by, at, via }, today) {
   const p = url ? parseUrl(url) : null;
   const item = {
     id, url: p ? p.url : '', canonical: p ? p.canonical : '', platform: p ? p.platform : 'memo',
-    note: str(note, 3000), by: by ? [by] : [], addedBy: by || '', addedAt: at, status: 'inbox', doneAt: 0, postponed: 0,
+    note: str(note, 3000), by: by ? [by] : [], addedBy: by || '', addedAt: at, via: str(via, 24), status: 'inbox', doneAt: 0, postponed: 0,
     source: sanitizeSource(source), fetch: { state: 'pending', tries: 0, nextAt: 0, error: '' },
     auto: null, ai: null, edits: null, updatedAt: at,
   };
@@ -533,6 +533,26 @@ export function findByCanonical(state, canonical) {
   return Object.values(state.items).find(i => i.canonical === canonical) || null;
 }
 
+// ---- 入れるだけのリンク（ChatGPT の dots など。drop.html）----
+// d: { v, id, items: [{ url, note }], by: 'ChatGPT'（どこから）, as: 'メンバー名'（だれが行きたい） } → item.add のイベント
+// 「行きたい人」は、すでにメンバーの名前のときだけ付ける（このリンクからはメンバーを増やせない）
+export const DROP_MAX_ITEMS = 10;
+export function fromDrop(d, timeSec, members = {}) {
+  if (!d || typeof d !== 'object' || !safeId(d.id) || d.id.length > 40 || !Array.isArray(d.items)) return [];
+  const at = Number(timeSec) > 0 ? Number(timeSec) * 1000 : Date.now();
+  const as = safeName(d.as);
+  const by = as && has(members, as) ? as : '';
+  const via = str(d.by, 24).replace(/\s+/g, ' ').trim();
+  return d.items.slice(0, DROP_MAX_ITEMS).flatMap((x, i) => {
+    if (!x || typeof x !== 'object') return [];
+    const url = typeof x.url === 'string' && x.url.length <= 2000 && parseUrl(x.url) ? x.url : '';
+    const note = str(x.note, 3000).trim();
+    if (!url && !note) return [];
+    const id = `d${i.toString(36)}${d.id}`;   // 同じ入れ方は、画面と同期のどちらで当てても同じ1件になる
+    return [{ id: `drop-${id}`, t: 'item.add', at, by, item: { id, url, note, via } }];
+  });
+}
+
 // イベントを1つ適用する（state を書き換える）。同じ id は二度適用しない。
 export function applyEvent(state, ev, { today } = {}) {
   if (!ev || typeof ev !== 'object' || typeof ev.id !== 'string') return false;
@@ -550,7 +570,7 @@ export function applyEvent(state, ev, { today } = {}) {
       const dup = p ? findByCanonical(state, p.canonical) : null;
       if (dup) { if (by && !dup.by.includes(by)) dup.by.push(by); if (x.note && !dup.note) dup.note = str(x.note, 3000); if (dup.status !== 'inbox' && dup.status !== 'done') dup.status = 'inbox'; dup.updatedAt = at; refreshAuto(dup, today); break; }
       if (!p && !str(x.note, 3000).trim()) break;
-      state.items[x.id] = newItem({ id: x.id, url: x.url, note: x.note, source: x.source, by, at }, today);
+      state.items[x.id] = newItem({ id: x.id, url: x.url, note: x.note, source: x.source, by, at, via: x.via }, today);
       break;
     }
     case 'item.edit': {

@@ -83,15 +83,29 @@ YouTube Data API v3 の API キー（無料・1日1万回まで。1本の読み�
 gh secret set YOUTUBE_API_KEY -R sho3690/donichi      # 実行すると貼り付けを求められる
 ```
 
+## ChatGPT などから入れる（入れるだけのリンク）
+
+ChatGPT の dots のように自分のブラウザを持つ AI に「土日に入れておいて」と頼めるように、
+合言葉なしで**ストックに入れることだけ**ができるページ（`drop.html`）があります。
+
+- リンク: `drop.html#w=<受け口>&as=<だれが行きたい>&by=ChatGPT&u=<リンク>&n=<メモ>`（`u`・`n` は省いて、開いてから書いてもよい）。
+  画面の「設定 → ChatGPT などから入れる」で、AI に渡す説明文ごとコピーできます。
+- 中身は `drop.json` の**公開鍵**で封をして中継に置きます（ECDH P-256 → HKDF → AES-GCM）。開ける秘密鍵と受け口の宛先は、
+  `drop.json` の中で合言葉の鍵で封をしてあるので、リンクを持つ人もストックの中は読めません。
+- 開いている画面は届いた分をすぐに見せ、15分ごとの同期が保存します。同じ入れ方は二重になりません。
+- 「行きたい人」（`as`）は、すでにメンバーの名前のときだけ付きます（このリンクからメンバーは増やせません）。
+- リンクが知らない人に渡ったとき: `node scripts/drop-setup.mjs --rotate` → `drop.json` をコミットして push（古いリンクは使えなくなる）。
+
 ## 合言葉を変える（招待リンクが広まりすぎたとき）
 
 ```
 node scripts/setup.mjs --keep-state       # データはそのまま、新しい合言葉で封し直す
 gh secret set DONICHI_KEY -R sho3690/donichi < .secrets/master.b64
-git add config.json data/state.json && git commit -m "合言葉を変更" && git push
+git add config.json data/state.json drop.json && git commit -m "合言葉を変更" && git push
 ```
 
 新しい合言葉・招待リンクは `.secrets/owner.txt` に出ます（コミットされません）。古いリンクでは開けなくなります。
+入れるだけのリンク（`drop.json`）も新しい鍵で封し直されるので、`drop.json` も一緒にコミットしてください（リンクはそのまま使えます）。
 
 ## 開発
 
