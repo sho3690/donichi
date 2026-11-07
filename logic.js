@@ -711,7 +711,7 @@ export function weatherLabel(w) {
   if (!w) return null;
   const c = w.code;
   const text = c === 0 ? '快晴' : c <= 2 ? '晴れ' : c === 3 ? 'くもり' : c <= 48 ? '霧' : c <= 57 ? '小雨' : c <= 67 ? '雨' : c <= 77 ? '雪' : c <= 82 ? 'にわか雨' : c <= 86 ? '雪' : '雷雨';
-  const icon = c <= 1 ? 'sun' : c <= 3 ? 'cloud' : c >= 71 && c <= 77 ? 'snow' : (c <= 48 ? 'cloud' : 'rain');
+  const icon = c <= 2 ? 'sun' : c <= 3 ? 'cloud' : c >= 71 && c <= 77 ? 'snow' : (c <= 48 ? 'cloud' : 'rain');
   return { text, icon };
 }
 export const isRainy = w => !!w && (w.rain >= 60 || (w.code >= 61 && w.code <= 67) || (w.code >= 80 && w.code <= 82) || w.code >= 95);
@@ -902,6 +902,117 @@ export function slotAfterReplace(state, plan, index, info) {
   if (info.duration === 'full') return 'day';
   const taken = plan.slots.filter((x, i) => i !== index && x.date === s.date && has(state.items, x.itemId));
   return freeSlotFor(info, taken, 3) || 'pm';
+}
+
+// ---- 今週末のおすすめ（日付で分けず、週末まるごとで「このあたりどう？」と出す） ----
+// 期限・天気・場所の3つを見て並べる。理由は種類ごとに分けて返す（画面で見出し付きの小さな札にする）。
+const dayName = d => `${DOW_JA[dow(d)]}曜`;
+const wxWord = w => weatherLabel(w)?.text || 'くもり';
+// 小雨・にわか雨も、降水確率が40%以上なら「雨寄り」として扱う（画面の天気の札と言うことを揃える）
+const wet = w => !!w && (isRainy(w) || (w.code >= 51 && w.rain >= 40));
+
+function deadlineNote(info, wk, today) {
+  const rs = (info.dates || []).filter(r => r.start || r.end);
+  const inWk = rs.filter(r => wk.days.some(d => d >= today && (!r.start || r.start <= d) && (!r.end || d <= r.end)));
+  const single = inWk.find(r => r.start && r.start === r.end);
+  if (single) return { text: `${mdw(single.start)}だけ`, urgent: true };
+  const end = lastDate(info);
+  if (end) {
+    if (end <= wk.days.at(-1)) return { text: '今週末で終わり', urgent: true };
+    const left = diffDays(today, end);
+    if (left <= 14) return { text: `${md(end)}まで（あと${left}日）`, urgent: left <= 9 };
+    return { text: `${md(end)}まで`, urgent: false };
+  }
+  const starts = inWk.map(r => r.start).filter(s => s && wk.days.includes(s));
+  if (starts.length) return { text: `${md(starts[0])}から始まる`, urgent: false };
+  return null;
+}
+
+function weatherNote(info, days, weather) {
+  const ws = days.map(d => [d, weather?.[d]]).filter(x => x[1]);
+  if (!ws.length) return null;
+  const rainy = ws.filter(x => wet(x[1])), fine = ws.filter(x => isFine(x[1]));
+  const hot = ws.filter(x => x[1].max >= 32), cold = ws.filter(x => x[1].max <= 8);
+  if (info.indoor === true) {
+    if (rainy.length) return { text: '雨でも屋内なので安心', fit: 'good' };
+    if (hot.length) return { text: '暑い日でも屋内', fit: 'good' };
+    return { text: '屋内', fit: 'neutral' };
+  }
+  if (info.indoor === false) {
+    if (rainy.length === ws.length) return { text: '外なのに雨予報。別の週でも', fit: 'bad' };
+    if (fine.length && rainy.length) return { text: `外なので${fine.map(x => dayName(x[0])).join('・')}の晴れ間に`, fit: 'good' };
+    if (fine.length) return { text: hot.length ? '晴れ。外は暑さに注意' : cold.length ? '晴れ。外は寒さに注意' : '晴れ予報で外にちょうどいい', fit: hot.length || cold.length ? 'neutral' : 'good' };
+    return { text: '外。天気はまずまず', fit: 'neutral' };
+  }
+  return null;
+}
+
+// 天気のひとこと（週末全体）
+export function weekendWeatherLine(wk, weather, today) {
+  const ws = wk.days.filter(d => d >= today).map(d => [d, weather?.[d]]).filter(x => x[1]);
+  if (!ws.length) return '';
+  const parts = [];
+  for (const [d, w] of ws) {
+    const word = wxWord(w);
+    const last = parts.at(-1);
+    if (last && last.word === word) last.days.push(d); else parts.push({ word, days: [d] });
+  }
+  const said = parts.map(p => `${p.days.map(dayName).join('・')}は${p.word}`).join('、');
+  const rainy = ws.filter(x => wet(x[1])), fine = ws.filter(x => isFine(x[1]));
+  const tip = rainy.length === ws.length ? '屋内を中心に。'
+    : rainy.length && fine.length ? `外に出るなら${fine.map(x => dayName(x[0])).join('・')}がよさそうです。`
+    : fine.length === ws.length ? '外にも出やすい週末です。' : '';
+  return `${said}の予報。${tip}`;
+}
+
+export function suggestWeekend(state, wk, { weather = {}, today, city = 'tokyo', skipped = [], limit = 5 } = {}) {
+  today = today || jstToday();
+  const home = has(CITIES, city) ? CITIES[city] : CITIES.tokyo;
+  const center = { lat: home.lat, lng: home.lon };
+  const pool = candidates(state, wk, today).filter(c => !skipped.includes(c.item.id)).map(c => {
+    const per = c.days.map(d => ({ d, ...scoreOn(c, d, [], weather, wk.key) }));
+    const best = per.reduce((a, b) => (b.score > a.score ? b : a));
+    const km = c.info.geo ? distKm(center, c.info.geo) : null;
+    let score = best.score;
+    if (km != null && km <= 10) score += 6;
+    else if (km != null && km > 60 && c.info.duration !== 'full') score -= 10;
+    // 向いている日: 1日しか行けない／天気などで差がはっきりしているときだけ言う
+    const spread = Math.max(...per.map(p => p.score)) - Math.min(...per.map(p => p.score));
+    const day = wk.days.filter(d => d >= today).length > 1 && (c.days.length === 1 || spread >= 10)
+      ? { date: best.d, only: c.days.length === 1 } : null;
+    const wn = weatherNote(c.info, c.days, weather);
+    if (wn?.fit === 'bad') score -= 30;   // 行ける日がどれも雨寄りの屋外は、いちばん上には出さない
+    return { ...c, score, km, day, deadline: deadlineNote(c.info, wk, today), weather: wn };
+  });
+  // 上から選ぶ。同じ種類が続くのは避け、選んだものの近くはまとめて回れるので少し上げる
+  const picked = [];
+  const rest = [...pool];
+  while (rest.length) {
+    let bi = 0, bs = -Infinity;
+    rest.forEach((c, i) => {
+      let s = c.score - 15 * picked.filter(p => p.info.category === c.info.category).length;
+      if (c.info.geo && picked.some(p => p.info.geo && distKm(p.info.geo, c.info.geo) <= 3)) s += 10;
+      if (s > bs) { bs = s; bi = i; }
+    });
+    picked.push(rest.splice(bi, 1)[0]);
+  }
+  for (const c of picked) {
+    let near = null;
+    if (c.info.geo) {
+      for (const o of picked.slice(0, limit)) {
+        if (o === c || !o.info.geo) continue;
+        const d = distKm(c.info.geo, o.info.geo);
+        if (d <= 3 && (!near || d < near.km)) near = { id: o.item.id, title: o.info.title, km: d };
+      }
+    }
+    c.place = {
+      area: c.info.area || null,
+      from: c.km != null ? `${home.label}から${kmLabel(c.km)}` : null,
+      far: c.info.duration === 'full' || (c.km != null && c.km > 40),
+      near,
+    };
+  }
+  return { top: picked.slice(0, limit), more: picked.slice(limit) };
 }
 
 // ---- 定期の片づけ（Actions が実行） ----

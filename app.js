@@ -191,8 +191,8 @@ function showLock({ error = '', nameOnly = false } = {}) {
   root.replaceChildren(h('div', { class: 'lock-card' }, brand(),
     h('h1', {}, nameOnly ? 'ようこそ' : '招待された人だけが使えます'),
     h('p', { class: 'lead' }, nameOnly
-      ? 'みんなでストックしたお店やイベントを、毎週木曜の朝に今週末の予定として割り振ります。名前を入れてはじめましょう。'
-      : 'Instagram や TikTok で見つけた行きたい所をストックすると、毎週木曜の朝に今週末の予定として自動で割り振ります。'),
+      ? 'みんなでストックしたお店やイベントから、期限・場所・天気を見て今週末のおすすめを出します。名前を入れてはじめましょう。'
+      : 'Instagram や TikTok で見つけた行きたい所をストックすると、期限・場所・天気を見て今週末のおすすめを出します。'),
     form,
     h('p', { class: 'note' }, 'データは合言葉で暗号化して保存しています。合言葉を知らない人には中身が見えません。')));
   (nameOnly ? nameIn : pw).focus();
@@ -495,95 +495,91 @@ function loadingView() {
 }
 
 // ================= 今週末 =================
+// 土日で分けず、期限・場所・天気から「今週末このあたりどう？」をざっくり出す。開くたびに選び直す。
+function weekendWeather(wk, plan) {
+  const out = { ...(plan?.weather || {}) };
+  for (const d of wk.days) if (app.wx[d]) out[d] = app.wx[d];
+  return out;
+}
+
 function viewWeekend(st) {
   const today = L.jstToday();
   const wk = L.weekendFor(today);
   const plan = st.plans[wk.key];
+  const wx = weekendWeather(wk, plan);
   const hol = [...new Set(Object.values(wk.holidays))];
+  const days = wk.days.filter(d => d >= today);
   const head = h('div', { class: 'page-head' },
     h('h1', {}, '今週末'),
     h('p', { class: 'sub' }, h('strong', {}, L.weekendLabel(wk)), wk.days.length >= 3 ? ` · ${wk.days.length}連休` : '', hol.length ? ` · ${hol.join('・')}` : ''));
-  if (!plan) return [head, emptyPlan(st, wk, today)];
+  const strip = days.some(d => wx[d]) && h('ul', { class: 'wx-strip', 'aria-label': '週末の天気' }, days.map(d => {
+    const w = wx[d], lab = L.weatherLabel(w);
+    return h('li', {}, h('span', { class: 'wx-day' }, `${L.DOW_JA[L.dow(d)]}`, h('small', {}, L.md(d))),
+      lab ? [icon(lab.icon), h('span', { class: 'wx-txt' }, h('b', {}, lab.text), h('span', {}, `${w.max}° / ${w.min}°`), h('span', {}, `降水${w.rain}%`))]
+        : h('span', { class: 'wx-txt' }, '予報はまだ'));
+  }));
 
+  const total = Object.values(st.items).filter(i => i.status === 'inbox').length;
+  if (!total) return [head, h('section', { class: 'empty', 'aria-labelledby': 'empty-title' },
+    h('span', { class: 'ic-wrap' }, icon('weekend')),
+    h('h2', { id: 'empty-title' }, 'まずは行きたい所をストック'),
+    h('p', {}, 'Instagram・Threads・X・TikTok で見つけたお店やイベントのリンクを追加すると、日付や場所を読み取ってストックします。期限・場所・天気を見て、今週末のおすすめを出します。'),
+    h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'add', 'data-key': 'add-empty' }, icon('plus'), 'リンクを追加'))];
+
+  const skipped = (plan?.skipped || []).filter(id => L.has(st.items, id) && st.items[id].status === 'inbox');
+  const limit = { 1: 3, 2: 5, 3: 7 }[st.settings.pace] || 5;
+  const { top, more } = L.suggestWeekend(st, wk, { weather: wx, today, city: st.settings.city, skipped, limit });
+  const urgent = top.filter(c => c.deadline?.urgent).length;
+  const lead = [L.weekendWeatherLine(wk, wx, today), urgent ? `期限が近いものが${urgent}件あります。` : ''].filter(Boolean).join('');
   const out = [head];
-  for (const d of wk.days) {
-    // 過ぎた日で何も入っていない日は出さない
-    if (d < today && !plan.slots.some(s => s.date === d && L.has(st.items, s.itemId))) continue;
-    out.push(daySection(st, plan, d, today));
+  if (strip) out.push(strip);
+  if (lead) out.push(h('p', { class: 'wk-lead' }, lead));
+
+  if (!top.length) {
+    out.push(h('section', { class: 'empty', 'aria-labelledby': 'empty-title' },
+      h('span', { class: 'ic-wrap' }, icon('weekend')),
+      h('h2', { id: 'empty-title' }, skipped.length ? 'ほかに出せる候補がありません' : 'この週末に行けるものがありません'),
+      h('p', {}, skipped.length ? '今週パスしたものを戻すと、また候補に入ります。' : 'ストックはありますが、期間や定休日がこの週末に合いません。'),
+      skipped.length
+        ? h('button', { class: 'btn btn-secondary', type: 'button', 'data-action': 'unskip-all', 'data-key': 'unskip-empty' }, icon('refresh'), `パスした${skipped.length}件を戻す`)
+        : h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'add', 'data-key': 'add-empty' }, icon('plus'), 'リンクを追加')));
+    return out;
   }
-  const who = plan.by === 'auto' ? `${L.mdw(L.jstToday(plan.createdAt || Date.now()))} に自動で割り振りました` : `${plan.by}さんが ${hm(plan.createdAt)} に割り振りました`;
-  out.push(h('div', { class: 'plan-foot' }, h('span', {}, who),
-    h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'replan', 'data-key': 'replan' }, icon('refresh'), '割り振り直す')));
+
+  out.push(h('section', { class: 'suggest', 'aria-labelledby': 'sg-title' },
+    h('h2', { class: 'section-title', id: 'sg-title' }, 'このあたりどう？', h('small', {}, '期限・場所・天気から')),
+    h('ol', { class: 'sg-list' }, top.map((c, n) => h('li', {}, suggestCard(c, n === 0, today))))));
+  if (more.length) out.push(h('details', { class: 'fold' }, h('summary', {}, `ほかの候補（${more.length}件）`),
+    h('ul', { class: 'list' }, more.map(c => h('li', {}, itemCard(c.item, today))))));
+  out.push(h('div', { class: 'plan-foot' },
+    h('span', {}, '天気予報と期限・場所から、開くたびに選び直しています'),
+    skipped.length > 0 && h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'unskip-all', 'data-key': 'unskip-all' }, icon('refresh'), `パスした${skipped.length}件を戻す`)));
   return out;
 }
 
-function emptyPlan(st, wk, today) {
-  const cands = L.candidates(st, wk, today);
-  const autoDay = L.autoPlanDay(wk);
-  const waiting = today < autoDay;
-  const total = Object.values(st.items).filter(i => i.status === 'inbox').length;
-  const box = h('section', { class: 'empty', 'aria-labelledby': 'empty-title' },
-    h('span', { class: 'ic-wrap' }, icon('weekend')),
-    h('h2', { id: 'empty-title' }, total ? (waiting ? `${L.mdw(autoDay)} の朝7時に割り振ります` : 'まもなく割り振ります') : 'まずは行きたい所をストック'),
-    h('p', {}, total
-      ? (cands.length ? `ストックの${cands.length}件から、天気と住所を見て${wk.days.length}日間に入れます。雨の日は屋内へ、近い場所どうしは同じ日にまとめます。待たずに決めることもできます。` : 'ストックはありますが、この週末に行けるもの（期間・定休日が合うもの）がありません。')
-      : 'Instagram・Threads・X・TikTok で見つけたお店やイベントのリンクを追加すると、日付や場所を読み取ってストックします。毎週木曜の朝7時に、今週末の予定へ自動で割り振ります。'),
-    cands.length
-      ? h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'plan-now', 'data-key': 'plan-now' }, '今すぐ割り振る')
-      : h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'add', 'data-key': 'add-empty' }, icon('plus'), 'リンクを追加'));
-  const soon = cands.map(c => ({ c, end: L.lastDate(c.info) })).filter(x => x.end).sort((a, b) => a.end.localeCompare(b.end)).slice(0, 3);
-  if (!soon.length) return box;
-  return h('div', {}, box, h('section', { class: 'preview', 'aria-labelledby': 'soon-title' },
-    h('h2', { class: 'section-title', id: 'soon-title' }, '期限が近いもの', h('small', {}, '今週末に入りやすくなります')),
-    h('ul', { class: 'list' }, soon.map(x => h('li', {}, itemCard(x.c.item, today))))));
-}
-
-function weatherBadge(w) {
-  const lab = L.weatherLabel(w);
-  if (!lab) return null;
-  return h('span', { class: 'wx' }, icon(lab.icon), h('b', {}, lab.text), `${w.max}° / ${w.min}°`, ` · 降水${w.rain}%`);
-}
-
-function daySection(st, plan, d, today) {
-  const pace = st.settings.pace || 2;
-  const slots = plan.slots.map((s, i) => ({ ...s, i })).filter(s => s.date === d && L.has(st.items, s.itemId))
-    .sort((a, b) => L.SLOT_DEF[a.slot].order - L.SLOT_DEF[b.slot].order);
-  const hol = L.holidayName(d);
-  const w = app.wx[d] || plan.weather[d];
-  const list = h('ol', { class: 'timeline' }, slots.map(s => slotItem(st, s, d < today)));
-  const full = slots.some(s => s.slot === 'day') || slots.length >= pace;
-  return h('section', { class: 'day', 'aria-labelledby': `day-${d}` },
-    h('div', { class: 'day-head' },
-      h('h2', { id: `day-${d}` }, `${L.DOW_JA[L.dow(d)]}曜`, h('small', {}, L.md(d))),
-      hol && h('span', { class: 'holiday' }, hol),
-      weatherBadge(w)),
-    slots.length ? list : null,
-    d >= today && !full && h('div', { class: 'slot-empty' }, h('span', {}, slots.length ? 'まだ入れられます' : 'この日は空いています'),
-      h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'pick', 'data-date': d, 'data-key': `pick-${d}` }, icon('plus'), 'ストックから選ぶ')));
-}
-
-function slotItem(st, s, past) {
-  const item = st.items[s.itemId];
-  const info = L.effectiveInfo(item);
-  const done = item.status === 'done';
-  const def = L.SLOT_DEF[s.slot];
-  const meta = [info.area, L.CATEGORIES[info.category].label, info.hours].filter(Boolean);
-  const actions = done
-    ? [h('span', { class: 'done-pill' }, icon('done'), '行った'), h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'undone', 'data-id': item.id }, '取り消す')]
-    : [h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'done', 'data-id': item.id, 'data-key': `done-${s.i}` }, icon('done'), '行った'),
-      !past && h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'swap', 'data-i': s.i, 'data-key': `swap-${s.i}` }, icon('swap'), '入れ替え'),
-      !past && h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'unslot', 'data-i': s.i, 'data-key': `unslot-${s.i}` }, '外す')];
-  return h('li', { class: `tl${done ? ' is-done' : ''}` },
-    h('div', { class: 'tl-time' }, h('time', {}, def.time), h('span', {}, def.label)),
-    h('div', { class: 'tl-rail', 'aria-hidden': 'true' }, h('i')),
-    h('div', { class: 'tl-body' }, h('article', { class: 'card plan-card' },
-      h('button', { class: 'plan-main', type: 'button', 'data-action': 'open', 'data-id': item.id, 'data-key': `open-${s.i}` },
-        thumb(item, info),
-        h('span', { class: 'txt' },
-          h('span', { class: 'plan-title' }, info.title),
-          meta.length && h('span', { class: 'meta' }, meta.map(m => h('span', {}, m))),
-          s.reason && h('span', { class: 'reason' }, icon('spark'), s.reason))),
-      h('div', { class: 'plan-actions' }, actions))));
+function suggestCard(c, first, today) {
+  const { item, info } = c;
+  const meta = [L.CATEGORIES[info.category].label, info.duration && L.DURATION_LABEL[info.duration], info.hours].filter(Boolean);
+  const notes = [];
+  if (c.deadline) notes.push(['clock', '期限', c.deadline.text, c.deadline.urgent ? 'is-urgent' : '']);
+  if (c.weather) notes.push([c.weather.fit === 'bad' ? 'rain' : info.indoor === false ? 'sun' : 'cloud', '天気', c.weather.text, c.weather.fit === 'bad' ? 'is-bad' : '']);
+  const placeText = [c.place.area, c.place.from, c.place.far && '遠出向き'].filter(Boolean).join(' · ');
+  if (placeText) notes.push(['pin', '場所', placeText, '']);
+  if (c.place.near) notes.push(['link', '近く', `「${L.clip(c.place.near.title, 16)}」と${L.kmLabel(c.place.near.km)}。まとめて回れます`, '']);
+  const dayTip = c.day && `${L.DOW_JA[L.dow(c.day.date)]}曜${c.day.only ? 'だけ行けます' : 'がおすすめ'}`;
+  return h('article', { class: `card sg-card${first ? ' is-first' : ''}` },
+    h('button', { class: 'plan-main', type: 'button', 'data-action': 'open', 'data-id': item.id, 'data-key': `sg-${item.id}` },
+      thumb(item, info),
+      h('span', { class: 'txt' },
+        first && h('span', { class: 'sg-kicker' }, icon('spark'), 'いちばんのおすすめ'),
+        h('span', { class: 'plan-title' }, info.title),
+        meta.length && h('span', { class: 'meta' }, meta.map(m => h('span', {}, m))),
+        dayTip && h('span', { class: 'sg-day' }, dayTip))),
+    notes.length > 0 && h('dl', { class: 'sg-notes' }, notes.map(([ic, k, v, cls]) => h('div', { class: cls || null },
+      h('dt', {}, icon(ic), k), h('dd', {}, v)))),
+    h('div', { class: 'plan-actions' },
+      h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'done', 'data-id': item.id, 'data-key': `done-${item.id}` }, icon('done'), '行った'),
+      h('button', { class: 'btn btn-tertiary btn-sm', type: 'button', 'data-action': 'skip', 'data-id': item.id, 'data-key': `skip-${item.id}` }, '今週はパス')));
 }
 
 // ================= ストック =================
@@ -602,7 +598,7 @@ function viewStock(st) {
   if (f[0] === 'soon') list.sort((a, b) => L.lastDate(infos.get(a.id)).localeCompare(L.lastDate(infos.get(b.id))));
   else list.sort((a, b) => b.addedAt - a.addedAt);
   const head = h('div', { class: 'page-head' }, h('h1', {}, 'ストック', h('span', { class: 'count' }, `${items.length}件`)),
-    h('p', { class: 'sub' }, '行きたい所の置き場です。木曜の朝に、ここから今週末へ割り振ります。'));
+    h('p', { class: 'sub' }, '行きたい所の置き場です。ここから期限・場所・天気を見て、今週末のおすすめを出します。'));
   if (!items.length) return [head, h('section', { class: 'empty', 'aria-labelledby': 'empty-title' },
     h('span', { class: 'ic-wrap' }, icon('stock')),
     h('h2', { id: 'empty-title' }, 'まだ何もありません'),
@@ -697,7 +693,7 @@ function viewDone(st) {
   if (!done.length) out.push(h('section', { class: 'empty', 'aria-labelledby': 'empty-title' },
     h('span', { class: 'ic-wrap' }, icon('done')),
     h('h2', { id: 'empty-title' }, 'まだありません'),
-    h('p', {}, '週末の予定で「行った」を押すと、ここに残ります。行った所は次から割り振られません。')));
+    h('p', {}, '今週末のおすすめで「行った」を押すと、ここに残ります。行った所は次からおすすめに出ません。')));
   else {
     const groups = new Map();
     for (const i of done) { const d = new Date(i.doneAt); const k = `${d.getFullYear()}年${d.getMonth() + 1}月`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
@@ -958,8 +954,8 @@ function sheetSettings() {
   const city = st?.settings.city || 'tokyo';
   const nameIn = h('input', { class: 'input', id: 's-name', type: 'text', value: app.name, maxlength: '12', autocomplete: 'nickname', onkeydown: imeGuard });
   const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-labelledby': 's-pace' },
-    [[1, 'ゆったり', '1日1件'], [2, 'ふつう', '1日2件'], [3, 'たっぷり', '1日3件']].map(([v, l, sub]) =>
-      h('label', {}, h('input', { type: 'radio', name: 'pace', value: String(v), checked: v === pace, onchange: () => { send('settings.set', { pace: v }); toast(`予定の量を「${l}」にしました`); } }), l, h('small', {}, sub))));
+    [[1, 'しぼる', '3件'], [2, 'ふつう', '5件'], [3, 'たっぷり', '7件']].map(([v, l, sub]) =>
+      h('label', {}, h('input', { type: 'radio', name: 'pace', value: String(v), checked: v === pace, onchange: () => { send('settings.set', { pace: v }); toast(`おすすめの数を「${l}」にしました`); } }), l, h('small', {}, sub))));
   const citySel = h('select', { class: 'select', id: 's-city', onchange: e => { send('settings.set', { city: e.target.value }); setTimeout(loadWeather, 50); } },
     Object.entries(L.CITIES).map(([k, c]) => h('option', { value: k }, c.label)));
   citySel.value = city;
@@ -973,10 +969,10 @@ function sheetSettings() {
           if (!v || v === app.name) return;
           app.name = v; ls.set(K.name, v); send('member.join'); toast('名前を変えました（これからの追加に使います）');
         } }, '保存'))),
-    h('section', { class: 'settings-group' }, h('h3', { id: 's-pace' }, '週末の予定の量'), seg,
-      h('p', { class: 'help mt' }, '自動の割り振りで、1日に入れる数の上限です。')),
+    h('section', { class: 'settings-group' }, h('h3', { id: 's-pace' }, 'おすすめの数'), seg,
+      h('p', { class: 'help mt' }, '「今週末」に大きく出すおすすめの数です。残りは「ほかの候補」にまとめます。')),
     h('section', { class: 'settings-group' }, h('h3', {}, h('label', { for: 's-city' }, '天気を見る地域')), citySel,
-      h('p', { class: 'help mt' }, '雨の日は屋内、晴れの日は屋外を優先し、暑すぎる日は屋外を控えめにします。住所から場所を調べて、近い所を同じ日にまとめます。')),
+      h('p', { class: 'help mt' }, '雨の日は屋内、晴れの日は屋外を優先し、暑すぎる日は屋外を控えめにします。この地域からの距離と、近くでまとめて回れるかも見ます。')),
     h('section', { class: 'settings-group' }, h('h3', {}, '招待'),
       h('p', {}, '招待したい人には、あなたが受け取った招待リンクをそのまま送ってください。合言葉を知っていれば、ここで招待リンクを作り直せます。リンクを開いた人は合言葉なしで入れるので、信頼できる人にだけ送ってください。'),
       inviteForm(),
@@ -994,7 +990,7 @@ function sheetSettings() {
     dropSettings(),
     h('section', { class: 'settings-group' }, h('h3', {}, '同期'),
       h('p', { class: 'status' }, h('span', { class: `dot ${status[0]}`, 'aria-hidden': 'true' }), status[1], st?.syncedAt ? ` · 最終保存 ${hm(st.syncedAt)}` : ''),
-      h('p', { class: 'mt' }, '追加や変更はすぐ他の人にも届きます。投稿の読み取りと保存は15分ごと、今週末の割り振りは毎週木曜の朝7時に自動で行います。'),
+      h('p', { class: 'mt' }, '追加や変更はすぐ他の人にも届きます。投稿の読み取りと保存は15分ごとです。今週末のおすすめは、開くたびに天気予報と期限・場所から選び直します。'),
       h('div', { class: 'actions-row' }, h('button', { class: 'btn btn-secondary btn-sm', type: 'button', 'data-action': 'reload' }, icon('refresh'), '今すぐ更新'))),
     h('section', { class: 'settings-group' }, h('h3', {}, 'この端末'),
       h('p', {}, 'この端末から合言葉を消します。もう一度使うときは招待リンクか合言葉が必要です。'),
@@ -1007,7 +1003,7 @@ function dropSettings() {
   if (!app.drop) return h('section', { class: 'settings-group' }, head, h('p', {}, '準備中です。少したってから開き直してください。'));
   const link = `${new URL('drop.html', location.href).href.split('#')[0]}#w=${app.drop.topic}&as=${encodeURIComponent(app.name)}&by=ChatGPT`;
   const forAi = [
-    '「土日」（土日 DONICHI）は、週末に行きたいお店・イベント・場所をストックしておく私のアプリです。ストックしたものは、毎週木曜の朝に今週末の予定として自動で割り振られます。',
+    '「土日」（土日 DONICHI）は、週末に行きたいお店・イベント・場所をストックしておく私のアプリです。ストックしたものから、期限・場所・天気を見て今週末のおすすめが出ます。',
     '私が「土日に入れておいて」「ストックしておいて」「週末の候補に入れて」と頼んだら、あなたのブラウザで次の手順で入れてください。',
     '',
     `1. このリンクを開く: ${link}`,
@@ -1165,6 +1161,23 @@ function onAction(e) {
       const [gone] = next.slots.splice(i, 1);
       if (gone?.itemId && !next.skipped.includes(gone.itemId)) next.skipped.push(gone.itemId);
       setPlan(next, '予定から外しました（ストックには残ります）', plan);
+      break;
+    }
+    // 今週はパス: その週末の skipped に入れる（ストックには残り、翌週からまた候補に出る）
+    case 'skip': {
+      if (!L.has(st?.items, id)) break;
+      const { wk, plan } = currentPlan();
+      const base = plan || { key: wk.key, days: wk.days, slots: [], weather: {}, skipped: [], by: app.name, createdAt: Date.now(), closed: false };
+      const next = structuredClone(base);
+      if (!next.skipped.includes(id)) next.skipped.push(id);
+      next.slots = next.slots.filter(s => s.itemId !== id);
+      setPlan(next, '今週はパスしました（ストックには残ります）', plan || { ...base, skipped: [] });
+      break;
+    }
+    case 'unskip-all': {
+      const { plan } = currentPlan();
+      if (!plan?.skipped.length) break;
+      setPlan({ ...structuredClone(plan), skipped: [] }, 'パスしたものを候補に戻しました', plan);
       break;
     }
     case 'pick': openSheet('pick', { date: el.dataset.date }); break;

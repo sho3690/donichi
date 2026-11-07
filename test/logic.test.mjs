@@ -4,7 +4,7 @@ import {
   jstToday, jpHolidays, weekendFor, autoPlanDay, parseUrl, findUrls, extractDateRanges, extractInfo,
   emptyState, applyEvent, effectiveInfo, planWeekend, swapSlot, rankForSlot, maintain, eligibleOn,
   distKm, kmLabel, sanitizeLookup, lookupName, imageQueries, AUTO_VERSION,
-  sanitizePlan, dateLabel, htmlToText, fromDrop, DROP_MAX_ITEMS,
+  sanitizePlan, dateLabel, htmlToText, fromDrop, DROP_MAX_ITEMS, suggestWeekend, weekendWeatherLine,
 } from '../logic.js';
 
 const TODAY = '2026-10-26';   // 月曜
@@ -429,4 +429,52 @@ test('入れるだけのリンク: リンクごとに1件、行きたい人は�
   assert.deepEqual(fromDrop({ id: '../x', items: [] }), []);
   assert.deepEqual(fromDrop(null), []);
   assert.equal(fromDrop({ id: 'many', items: Array.from({ length: 30 }, (_, i) => ({ note: `メモ${i}` })) }).length, DROP_MAX_ITEMS);
+});
+
+// ---- 今週末のおすすめ（土日で分けない） ----
+test('おすすめ: 期限が近いもの・天気に合うものが上に来て、理由は期限・天気・場所に分かれる', () => {
+  const st = seed();
+  const wk = weekendFor(TODAY);
+  const { top, more } = suggestWeekend(st, wk, { weather: WX, today: TODAY, limit: 3 });
+  const ids = [...top, ...more].map(c => c.item.id);
+  assert.ok(!ids.includes('D'), '平日限定は出ない');
+  assert.ok(!ids.includes('F'), '期限切れは出ない');
+  assert.equal(top.length, Math.min(3, ids.length));
+  const a = [...top, ...more].find(c => c.item.id === 'A');
+  assert.ok(top.some(c => c.item.id === 'A'), 'もうすぐ終わるものは上位');
+  assert.ok(a.deadline?.urgent, '期限が近い印');
+  const c = [...top, ...more].find(c => c.item.id === 'C');
+  assert.match(c.weather.text, /日曜の晴れ間/, '外の予定は晴れる日を案内');
+  assert.equal(c.day?.date, '2026-11-01', '向いている日は日曜');
+  const e = [...top, ...more].find(c => c.item.id === 'E');
+  if (e) assert.deepEqual([e.day?.date, e.day?.only], ['2026-11-01', true], '土曜定休は「日曜だけ」');
+});
+
+test('おすすめ: パスしたものは出ない・近い所は「まとめて回れる」', () => {
+  const st = emptyState();
+  const T = '2026-10-26';
+  const put = (id, category, lat, lng) => {
+    applyEvent(st, { id: `a-${id}`, t: 'item.add', by: 'a', at: 1, item: { id, note: id } }, { today: T });
+    const it = st.items[id];
+    it.edits = { category, indoor: true };
+    it.lookup = { q: id, address: `東京都テスト${id}`, area: null };
+    it.geo = { q: `a:東京都テスト${id}`, lat, lng };
+  };
+  put('S1', 'cafe', 35.659, 139.700);
+  put('S2', 'shop', 35.662, 139.703);
+  put('K1', 'food', 35.316, 139.551);
+  const wk = weekendFor(T);
+  const r = suggestWeekend(st, wk, { today: T });
+  const s1 = r.top.find(c => c.item.id === 'S1');
+  assert.equal(s1.place.near?.id, 'S2');
+  assert.match(s1.place.from, /^東京から約\d/);
+  assert.equal(r.top.find(c => c.item.id === 'K1').place.far, true, '鎌倉は遠出向き');
+  const skipped = suggestWeekend(st, wk, { today: T, skipped: ['S1'] });
+  assert.ok(![...skipped.top, ...skipped.more].some(c => c.item.id === 'S1'));
+});
+
+test('おすすめ: 週末の天気のひとこと', () => {
+  assert.equal(weekendWeatherLine(weekendFor(TODAY), WX, TODAY), '土曜は雨、日曜は晴れの予報。外に出るなら日曜がよさそうです。');
+  assert.equal(weekendWeatherLine(weekendFor(TODAY), { '2026-10-31': { code: 1, max: 19, min: 8, rain: 2 }, '2026-11-01': { code: 53, max: 21, min: 11, rain: 52 } }, TODAY), '土曜は晴れ、日曜は小雨の予報。外に出るなら土曜がよさそうです。');
+  assert.equal(weekendWeatherLine(weekendFor(TODAY), {}, TODAY), '');
 });
